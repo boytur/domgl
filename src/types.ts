@@ -49,6 +49,8 @@ export interface TranspileOptions {
   maxElements?: number;
   /** output dir, relative to projectDir */
   outDir?: string;
+  /** minimum scene length in seconds; use 3.6 for fixed-slot films (default 0) */
+  slot?: number;
 }
 
 export interface LintOptions {

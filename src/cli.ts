@@ -104,6 +104,7 @@ async function main(): Promise<void> {
       compositionsDir: flags.compositions,
       stageFile: flags.stage,
       outDir: flags.outdir,
+      slot: flags.slot ? Number(flags.slot) : undefined,
     });
     const total = packages.reduce((a, p) => a + p.duration, 0);
     console.log(`transpiled ${packages.length} scenes · ${total.toFixed(2)}s`);

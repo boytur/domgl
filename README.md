@@ -28,6 +28,25 @@ npx domgl --help
 Requires Node 20+, a Chrome/Chromium binary (set `CHROME_PATH` or let it auto-detect
 Playwright / hyperframes caches), and a Chromium build with WebCodecs + hardware H.264.
 
+## Quickstart
+
+```bash
+git clone https://github.com/boytur/domgl && cd domgl
+npm install && npm run build
+
+node dist/cli.js transpile examples/hello hello
+node dist/cli.js lint examples/hello hello --strict
+node dist/cli.js render examples/hello hello --out hello.mp4
+```
+
+`examples/hello/compositions/hello.html` is a complete 3-second scene — copy it and change
+the markup. **You do not need any framework**: a scene is an HTML file with a paused GSAP
+timeline registered on `window.__timelines`. See [docs/authoring.md](docs/authoring.md) for
+the contract, what gets baked, and what to avoid.
+
+If you already use HyperFrames, `compositions/<id>.html` is the same file — domgl reads that
+folder directly, so nothing has to be rewritten.
+
 ## Usage
 
 ```bash

@@ -1,4 +1,4 @@
-import { mkdirSync, readFileSync, rmSync, writeFileSync, existsSync } from "node:fs";
+import { mkdirSync, readFileSync, rmSync, statSync, writeFileSync, existsSync } from "node:fs";
 import { join, resolve } from "node:path";
 import type { ElementSpec, Sample, ScenePackage, TranspileOptions } from "../types.js";
 import { launchBrowser } from "../lib/browser.js";
@@ -70,16 +70,16 @@ export async function transpile(options: TranspileOptions): Promise<ScenePackage
       await page.evaluate(() => document.fonts?.ready);
       await new Promise((r) => setTimeout(r, 250));
 
-      const duration = await page.evaluate(() => {
+      const duration = await page.evaluate((slotSec: number) => {
         const timelines = (window as unknown as { __timelines?: Record<string, { duration(): number }> })
           .__timelines;
         const key = timelines ? Object.keys(timelines)[0] : undefined;
         const tlDur = key && timelines ? timelines[key]!.duration() : 0;
         const rootEl = document.getElementById("root");
         const attr = Number.parseFloat(rootEl?.getAttribute("data-duration") ?? "0") || 0;
-        // a scene's timeline often ends before its slot; the film holds the last frame
-        return Math.min(12, Math.max(tlDur, attr, 3.6));
-      });
+        const base = Math.max(tlDur, attr, slotSec || 0);
+        return Math.min(120, base > 0 ? base : 3.6);
+      }, options.slot ?? 0);
 
       const inventory = (await page.evaluate((cap: number) => {
         const rootEl = document.getElementById("root");
@@ -136,7 +136,7 @@ export async function transpile(options: TranspileOptions): Promise<ScenePackage
       }, maxElements)) as RawElement[];
 
       // bake one transparent PNG per element
-      const elements: ElementSpec[] = [];
+      const baked: ElementSpec[] = [];
       for (const raw of inventory) {
         await page.evaluate((i: number) => {
           const target = document.querySelector(`[data-tx="${i}"]`);
@@ -156,21 +156,45 @@ export async function transpile(options: TranspileOptions): Promise<ScenePackage
         const width = Math.min(1080 - x, raw.w + pad * 2);
         const height = Math.min(1920 - y, raw.h + pad * 2);
 
+        const texPath = join(dir, `e${raw.i}.png`);
         await page.screenshot({
-          path: join(dir, `e${raw.i}.png`),
+          path: texPath,
           type: "png",
           omitBackground: true,
           clip: { x, y, width, height },
         });
-
-        elements.push({ ...raw, tex: `${id}/e${raw.i}.png`, pad });
 
         await page.evaluate(() => {
           document.querySelectorAll("body *").forEach((el) => {
             (el as HTMLElement).style.visibility = "";
           });
         });
+
+        // a blank element (borderless wrapper, empty div) produces an almost empty
+        // PNG; drop it instead of paying for a full-screen transparent plane
+        const bytes = statSync(texPath).size;
+        if (bytes < 300) {
+          rmSync(texPath, { force: true });
+          continue;
+        }
+
+        baked.push({ ...raw, tex: `${id}/e${raw.i}.png`, pad });
       }
+
+      // re-index the kept elements so frames[frame][i] lines up with elements[i]
+      for (let i = 0; i < baked.length; i++) {
+        const spec = baked[i]!;
+        await page.evaluate(
+          (attr: number, next: number) => {
+            const el = document.querySelector(`[data-tx="${attr}"]`);
+            if (el) el.setAttribute("data-tx", String(next));
+          },
+          spec.i,
+          i,
+        );
+      }
+
+      const elements: ElementSpec[] = baked;
 
       // sample the real timeline
       const frameCount = Math.max(1, Math.round(duration * fps));
