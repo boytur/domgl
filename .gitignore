@@ -1,0 +1,8 @@
+node_modules/
+dist/
+*.log
+.domgl/
+.webgl/
+renders/
+webgl/auto/
+.DS_Store

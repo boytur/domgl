@@ -1,0 +1,167 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>tcrender player</title>
+<style>
+  html, body { margin: 0; width: 1080px; height: 1920px; overflow: hidden; background: #000; }
+  #c { display: block; width: 1080px; height: 1920px; }
+</style>
+<script src="https://cdn.jsdelivr.net/npm/three@0.149.0/build/three.min.js"></script>
+</head>
+<body>
+<div id="root" data-composition-id="tcrender" data-start="0" data-duration="180" data-width="1080" data-height="1920">
+  <canvas id="c" width="1080" height="1920"></canvas>
+</div>
+<script>
+/*
+ * Plays transpiled scene packages (webgl/auto/<id>.json) frame by frame and encodes
+ * with hardware H.264. No DOM motion is evaluated here: every transform was sampled
+ * from the original GSAP timeline by the transpiler.
+ */
+(function () {
+  var W = 1080, H = 1920, FOV = 30, D = H / (2 * Math.tan((FOV * Math.PI) / 360));
+
+  var canvas = document.getElementById("c");
+  var renderer = new THREE.WebGLRenderer({ canvas: canvas, antialias: true, preserveDrawingBuffer: true });
+  renderer.setPixelRatio(1);
+  renderer.setSize(W, H, false);
+  renderer.outputEncoding = THREE.sRGBEncoding;
+
+  var scene = new THREE.Scene();
+  scene.background = new THREE.Color(0x111111);
+  var camera = new THREE.PerspectiveCamera(FOV, W / H, 1, 30000);
+  camera.position.set(0, 0, D);
+
+  var loader = new THREE.TextureLoader();
+  var state = { packs: [], groups: [], starts: [] };
+  var BASE = new URLSearchParams(location.search).get("base") || "webgl/auto";
+
+  function tex(url) {
+    return new Promise(function (resolve) {
+      loader.load(url, function (t) {
+        t.encoding = THREE.sRGBEncoding;
+        t.anisotropy = 4;
+        resolve(t);
+      }, undefined, function () { resolve(null); });
+    });
+  }
+
+  window.__load = async function (ids) {
+    var packs = await Promise.all(ids.map(function (id) {
+      return fetch(BASE + "/" + id + ".json").then(function (r) { return r.json(); });
+    }));
+
+    var at = 0;
+    for (var p = 0; p < packs.length; p++) {
+      var pack = packs[p];
+      var g = new THREE.Group();
+      g.visible = false;
+      scene.add(g);
+      state.groups.push(g);
+      state.starts.push(at);
+      at += pack.duration;
+
+      for (var i = 0; i < pack.elements.length; i++) {
+        var e = pack.elements[i];
+        var t = await tex(BASE + "/" + e.tex);
+        if (!t) continue;
+        var pw = e.w + e.pad * 2, ph = e.h + e.pad * 2;
+        var mesh = new THREE.Mesh(
+          new THREE.PlaneGeometry(pw, ph),
+          new THREE.MeshBasicMaterial({ map: t, transparent: true, depthWrite: false }),
+        );
+        mesh.position.set(e.x - e.pad + pw / 2 - 540, 960 - (e.y - e.pad + ph / 2), (e.z * 10) + i * 0.01);
+        mesh.userData = { pack: p, index: i, pw: pw, ph: ph };
+        g.add(mesh);
+      }
+    }
+
+    state.packs = packs;
+    window.__totalDuration = at;
+    window.__ready = true;
+    return at;
+  };
+
+  function applyFrame(time) {
+    // find active pack
+    var p = 0;
+    for (var k = 0; k < state.packs.length; k++) {
+      if (time >= state.starts[k] && time < state.starts[k] + state.packs[k].duration) { p = k; break; }
+      if (k === state.packs.length - 1) p = k;
+    }
+    for (var g = 0; g < state.groups.length; g++) state.groups[g].visible = (g === p);
+
+    var pack = state.packs[p];
+    var local = time - state.starts[p];
+    var frame = Math.min(pack.frames.length - 1, Math.max(0, Math.round(local * pack.fps)));
+    var row = pack.frames[frame];
+    if (!row) return;
+
+    var meshes = state.groups[p].children;
+    for (var i = 0; i < meshes.length; i++) {
+      var m = meshes[i];
+      var s = row[m.userData.index];
+      if (!s) { m.visible = false; continue; }
+      m.visible = true;
+      var e = pack.elements[m.userData.index];
+      var pw = m.userData.pw, ph = m.userData.ph;
+      m.position.set(s[0] - e.pad + pw / 2 - 540, 960 - (s[1] - e.pad + ph / 2), (e.z * 10) + m.userData.index * 0.01);
+      m.rotation.z = -s[2];
+      m.scale.set(s[3], s[3], 1);
+      m.material.opacity = s[4];
+    }
+  }
+
+  window.__draw = function (time) {
+    applyFrame(time);
+    renderer.render(scene, camera);
+  };
+
+  window.__renderMp4 = async function (fps, seconds, bitrate) {
+    var mod = await import("https://cdn.jsdelivr.net/npm/mp4-muxer@5.2.1/+esm");
+    var muxer = new mod.Muxer({
+      target: new mod.ArrayBufferTarget(),
+      video: { codec: "avc", width: W, height: H },
+      fastStart: "in-memory",
+    });
+    var encoded = 0;
+    var encoder = new VideoEncoder({
+      output: function (chunk, meta) { encoded += chunk.byteLength; muxer.addVideoChunk(chunk, meta); },
+      error: function (e) { window.__err = String(e); },
+    });
+    encoder.configure({
+      codec: "avc1.640028", width: W, height: H, bitrate: bitrate || 9000000,
+      framerate: fps, hardwareAcceleration: "prefer-hardware", latencyMode: "quality",
+    });
+
+    var total = Math.round(fps * seconds);
+    var t0 = performance.now();
+    for (var i = 0; i < total; i++) {
+      var t = i / fps;
+      window.__draw(t);
+      var frame = new VideoFrame(canvas, { timestamp: Math.round(t * 1e6), duration: Math.round(1e6 / fps) });
+      encoder.encode(frame, { keyFrame: i % (fps * 2) === 0 });
+      frame.close();
+      while (encoder.encodeQueueSize > 6) await new Promise(function (r) { setTimeout(r, 0); });
+    }
+    await encoder.flush();
+    muxer.finalize();
+
+    var bytes = new Uint8Array(muxer.target.buffer);
+    if (typeof window.__sink === "function") {
+      var SLICE = 3 * 1024 * 1024;
+      for (var o = 0; o < bytes.length; o += SLICE) {
+        var part = bytes.subarray(o, o + SLICE);
+        var sb = "", st = 0x8000;
+        for (var q = 0; q < part.length; q += st) sb += String.fromCharCode.apply(null, part.subarray(q, q + st));
+        await window.__sink(o / SLICE, btoa(sb));
+      }
+      return { frames: total, ms: Math.round(performance.now() - t0), bytes: bytes.length, encoded: encoded, streamed: true };
+    }
+    return { frames: total, ms: Math.round(performance.now() - t0), bytes: bytes.length, encoded: encoded };
+  };
+})();
+</script>
+</body>
+</html>
