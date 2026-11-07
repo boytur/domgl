@@ -93,6 +93,20 @@ export async function transpile(options: TranspileOptions): Promise<ScenePackage
         };
 
         const out: RawElement[] = [];
+        // Effective stacking value: an element can never paint above its own
+        // ancestor's layer, and a descendant must paint above its parent's
+        // background. Taking the max z-index of the ancestor chain and letting
+        // DOM order break ties reproduces CSS painting order closely enough.
+        const effectiveZ = (el: Element): number => {
+          let z = 0;
+          let p: Element | null = el;
+          while (p && p !== rootEl.parentElement) {
+            const v = Number.parseInt(getComputedStyle(p).zIndex, 10);
+            if (!Number.isNaN(v) && v > z) z = v;
+            p = p.parentElement;
+          }
+          return z;
+        };
         for (const el of Array.from(rootEl.querySelectorAll("*"))) {
           if (el.closest("svg") && el.tagName.toLowerCase() !== "svg") continue;
           const cs = getComputedStyle(el);
@@ -115,7 +129,7 @@ export async function transpile(options: TranspileOptions): Promise<ScenePackage
             y: Math.round(r.top * 10) / 10,
             w: Math.round(r.width * 10) / 10,
             h: Math.round(r.height * 10) / 10,
-            z: Number.parseInt(cs.zIndex, 10) || 0,
+            z: effectiveZ(el),
           });
         }
         return out;

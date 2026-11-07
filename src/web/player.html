@@ -36,6 +36,7 @@
   var loader = new THREE.TextureLoader();
   var state = { packs: [], groups: [], starts: [] };
   var BASE = new URLSearchParams(location.search).get("base") || "webgl/auto";
+  if (!/^https?:/.test(BASE)) BASE = "/" + BASE.replace(/^\/+/, "");
 
   function tex(url) {
     return new Promise(function (resolve) {
@@ -116,6 +117,21 @@
   window.__draw = function (time) {
     applyFrame(time);
     renderer.render(scene, camera);
+  };
+
+  window.__debug = function () {
+    return state.groups.map(function (g) {
+      return g.visible ? g.children.map(function (m) {
+        return {
+          i: m.userData.index,
+          v: m.visible,
+          x: Math.round(m.position.x),
+          y: Math.round(m.position.y),
+          z: Math.round(m.position.z * 100) / 100,
+          op: Math.round(m.material.opacity * 100) / 100,
+        };
+      }) : [];
+    });
   };
 
   window.__renderMp4 = async function (fps, seconds, bitrate) {
