@@ -4,5 +4,5 @@ dist/
 .domgl/
 .webgl/
 renders/
-webgl/auto/
+**/webgl/auto/
 .DS_Store
