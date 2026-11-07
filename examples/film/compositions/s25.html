@@ -1,0 +1,1105 @@
+<template>
+<style>
+@font-face {
+  font-family: "Kanit";
+  src: url("assets/fonts/Kanit-Medium.ttf") format("truetype");
+  font-weight: 500;
+}
+@font-face {
+  font-family: "Kanit";
+  src: url("assets/fonts/Kanit-Bold.ttf") format("truetype");
+  font-weight: 700;
+}
+@font-face {
+  font-family: "Kanit";
+  src: url("assets/fonts/Kanit-ExtraBold.ttf") format("truetype");
+  font-weight: 800;
+}
+@font-face {
+  font-family: "PlexThai";
+  src: url("assets/fonts/IBMPlexSansThaiLooped-Regular.ttf") format("truetype");
+  font-weight: 400;
+}
+@font-face {
+  font-family: "PlexThai";
+  src: url("assets/fonts/IBMPlexSansThaiLooped-Medium.ttf") format("truetype");
+  font-weight: 500;
+}
+
+* {
+  margin: 0;
+  padding: 0;
+  box-sizing: border-box;
+}
+
+#root {
+  position: absolute;
+  inset: 0;
+  overflow: hidden;
+  background: #f7ebd2;
+  font-family: "Kanit", sans-serif;
+  -webkit-font-smoothing: antialiased;
+}
+
+.stage {
+  position: absolute;
+  inset: 0;
+  transform-origin: 50% 48%;
+}
+
+.char {
+  position: absolute;
+  transform-origin: 50% 100%;
+  z-index: 8;
+}
+
+.char svg {
+  display: block;
+  width: 100%;
+  height: 100%;
+  overflow: visible;
+}
+
+.blink {
+  transform-origin: 50% 100%;
+}
+
+/* A phone notification that lives in the cartoon world. */
+.notif {
+  position: absolute;
+  width: 430px;
+  padding: 16px 18px;
+  display: flex;
+  gap: 14px;
+  align-items: center;
+  background: #fff8e8;
+  border: 4px solid #1b1a17;
+  border-radius: 18px;
+  box-shadow: 0 8px 0 rgba(27, 26, 23, 0.16);
+  z-index: 30;
+}
+
+.notif .ico {
+  width: 54px;
+  height: 54px;
+  border-radius: 14px;
+  background: #e5533d;
+  flex: none;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: #f7ebd2;
+  font: 800 26px/1 "Kanit", sans-serif;
+}
+
+.notif .copy {
+  font: 600 20px/1.25 "Kanit", sans-serif;
+  color: #1b1a17;
+}
+
+.notif .copy small {
+  display: block;
+  margin-top: 3px;
+  font: 500 16px/1.2 "PlexThai", sans-serif;
+  color: #6b5a48;
+}
+
+.paper {
+  background: #fff8e8;
+  border: 4px solid #1b1a17;
+  border-radius: 14px;
+  box-shadow: 0 8px 0 rgba(27, 26, 23, 0.14);
+}
+
+</style>
+<script>
+/* Minimal 2D "stage" helpers shared by every scene.
+ *
+ * Two problems this solves:
+ *   1. characters floating above / sinking under the floor
+ *      -> Stage.snap() puts the soles exactly on a named floor element
+ *   2. a camera push that reads as "the props are growing"
+ *      -> Stage.camera() moves background / world / foreground at different
+ *         rates around a single focus point, so it reads as depth, not scale
+ *
+ * Character SVG contract: viewBox 0 0 300 420, soles at y=410.
+ */
+
+(function () {
+  var SOLE = 410;
+  var VB_H = 420;
+
+  function soleOf(el) {
+    var r = el.getBoundingClientRect();
+    return r.top + r.height * (SOLE / VB_H);
+  }
+
+  /**
+   * Put every matched element's feet on the top edge of `floorSelector`.
+   * Elements must share an offsetParent with the floor (a lift cabin, a room).
+   */
+  function snap(selector, floorSelector, opts) {
+    var floor = document.querySelector(floorSelector);
+    if (!floor) return [];
+    var floorY = floor.getBoundingClientRect().top;
+    var els = document.querySelectorAll(selector);
+    var moved = [];
+    for (var i = 0; i < els.length; i++) {
+      var el = els[i];
+      var delta = floorY - soleOf(el) - (opts && opts.gap ? opts.gap : 0);
+      if (Math.abs(delta) < 0.5) {
+        moved.push(0);
+        continue;
+      }
+      el.style.top = (el.offsetTop + delta).toFixed(1) + "px";
+      moved.push(Number(delta.toFixed(1)));
+    }
+    return moved;
+  }
+
+  /**
+   * Parallax camera move. Layers tagged .cam-bg / .cam-world / .cam-fg
+   * scale by different amounts around the same focus point.
+   *
+   *   Stage.camera(tl, { zoom: 0.05, duration: 3.6, origin: "540px 1200px" });
+   */
+  function camera(tl, opts) {
+    opts = opts || {};
+    var zoom = opts.zoom == null ? 0.045 : opts.zoom;
+    var at = opts.at == null ? 0 : opts.at;
+    var dur = opts.duration == null ? 3.6 : opts.duration;
+    var ease = opts.ease || "none";
+    var origin = opts.origin || "540px 1200px";
+    var rates = opts.rates || { ".cam-bg": 0.45, ".cam-world": 1, ".cam-fg": 1.55 };
+    var applied = [];
+
+    Object.keys(rates).forEach(function (sel) {
+      var els = document.querySelectorAll(sel);
+      if (!els.length) return;
+      tl.fromTo(
+        els,
+        { scale: 1, transformOrigin: origin },
+        { scale: 1 + zoom * rates[sel], duration: dur, ease: ease },
+        at,
+      );
+      applied.push(sel);
+    });
+
+    return applied;
+  }
+
+  /**
+   * Real camera dolly using CSS 3D. Layers sit at different z; moving them all by the
+   * same amount makes near layers grow more than far ones — which is what a camera does,
+   * as opposed to `scale`, which grows everything equally and reads as "props inflating".
+   *
+   *   Stage.dolly(tl, { layers: [{ sel: "#s47-bg", z: -300 }, { sel: "#s47-stage", z: 0 }], move: 140 });
+   */
+  function dolly(tl, opts) {
+    opts = opts || {};
+    var rootEl = document.querySelector("#root");
+    if (!rootEl) return false;
+    var perspective = opts.perspective == null ? 1400 : opts.perspective;
+    rootEl.style.perspective = perspective + "px";
+    rootEl.style.perspectiveOrigin = opts.origin || "50% 62%";
+    rootEl.style.transformStyle = "preserve-3d";
+
+    var layers = opts.layers || [];
+    var move = opts.move == null ? 120 : opts.move;
+    var dur = opts.duration == null ? 3.6 : opts.duration;
+    var at = opts.at == null ? 0 : opts.at;
+    var applied = [];
+
+    layers.forEach(function (layer) {
+      var els = document.querySelectorAll(layer.sel);
+      if (!els.length) return;
+      var z0 = layer.z || 0;
+      // pre-scale so the layer still fills the frame at its resting depth
+      var comp = (perspective - z0) / perspective;
+      for (var i = 0; i < els.length; i++) {
+        els[i].style.transformStyle = "preserve-3d";
+        els[i].style.backfaceVisibility = "hidden";
+      }
+      tl.fromTo(els, { z: z0, scale: comp }, { z: z0 + move, duration: dur, ease: "none" }, at);
+      applied.push(layer.sel);
+    });
+
+    return applied;
+  }
+
+  /**
+   * Gravity-correct fall. Starts at rest, accelerates down, fades near the end.
+   * `y` is the drop distance in px; positive is down.
+   */
+  function fall(tl, target, opts) {
+    opts = opts || {};
+    var at = opts.at == null ? 0 : opts.at;
+    var dur = opts.duration == null ? 0.7 : opts.duration;
+    var drop = opts.drop == null ? 56 : opts.drop;
+    var stagger = opts.stagger || 0;
+    return tl.fromTo(
+      target,
+      { y: 0, opacity: 0 },
+      { y: drop, opacity: 1, duration: dur, ease: "power2.in", stagger: stagger },
+      at,
+    );
+  }
+
+  window.Stage = { snap: snap, camera: camera, dolly: dolly, fall: fall, soleOf: soleOf };
+})();
+
+</script>
+<style>
+  .bg { position: absolute; inset: 0; z-index: 1; }
+  .bg svg { display: block; width: 1080px; height: 1920px; }
+  .stage { position: absolute; inset: 0; z-index: 2; }
+
+  #s25-prot { left: 740px; top: 960px; width: 330px; height: 462px; z-index: 9; transform: rotate(2deg); }
+  #s25-h1 { left: 520px; top: 1020px; width: 270px; height: 378px; z-index: 8; filter: hue-rotate(28deg); }
+  #s25-h2 { left: 380px; top: 1080px; width: 240px; height: 336px; z-index: 7; filter: hue-rotate(-26deg); }
+  #s25-barista { left: 240px; top: 1020px; width: 280px; height: 392px; z-index: 6; }
+  #s25-h1, #s25-h2, #s25-barista { transform: rotate(2deg); }
+
+  #s25-prot #prot-brow-normal { opacity: 0; }
+  #s25-prot #prot-brow-shock { opacity: 1; }
+  #s25-prot #prot-mouth-flat { opacity: 0; }
+  #s25-prot #prot-mouth-shock { opacity: 1; }
+  #s25-prot #prot-sweat { opacity: 1; }
+
+  .s25-chaser #hunk-brow-normal { opacity: 0; }
+  .s25-chaser #hunk-brow-shock { opacity: 1; }
+  .s25-chaser #hunk-mouth-flat { opacity: 0; }
+  .s25-chaser #hunk-mouth-open { opacity: 1; }
+  #s25-h1 #hunk-arm-r { transform-box: view-box; transform: rotate(40deg); }
+  #s25-h2 #hunk-arm-l { transform-box: view-box; transform: rotate(-40deg); }
+  #s25-barista #hunk-arm-r { transform-box: view-box; transform: rotate(30deg); }
+
+  .s25-line {
+    position: absolute; height: 8px; background: #fff8e8;
+    border: 4px solid #1b1a17; border-radius: 6px; z-index: 3; opacity: 0.85;
+  }
+
+  .s25-dust { position: absolute; width: 72px; height: 34px; border-radius: 50%; background: #d8c2a0; border: 5px solid #1b1a17; z-index: 5; opacity: 0.85; }
+
+  .s25-scooter { position: absolute; left: 30px; top: 1215px; width: 240px; height: 210px; z-index: 4; }
+  .s25-scooter .wheel {
+    position: absolute; bottom: 0; width: 56px; height: 56px; border-radius: 50%;
+    background: #1b1a17; border: 7px solid #1b1a17;
+  }
+  .s25-scooter .wheel::after {
+    content: ""; position: absolute; inset: 15px; border-radius: 50%; background: #d7dad2;
+  }
+  .s25-scooter .wheel.a { left: 10px; }
+  .s25-scooter .wheel.b { left: 164px; }
+  .s25-scooter .deck {
+    position: absolute; left: 30px; bottom: 44px; width: 150px; height: 24px;
+    background: #e5533d; border: 6px solid #1b1a17; border-radius: 8px;
+  }
+  .s25-scooter .body {
+    position: absolute; left: 152px; bottom: 52px; width: 50px; height: 86px;
+    background: #e5533d; border: 6px solid #1b1a17; border-radius: 12px 12px 4px 4px;
+  }
+  .s25-scooter .column {
+    position: absolute; left: 172px; bottom: 132px; width: 12px; height: 54px;
+    background: #1b1a17; border-radius: 4px; transform: rotate(10deg);
+  }
+  .s25-scooter .bar {
+    position: absolute; left: 154px; bottom: 178px; width: 62px; height: 12px;
+    background: #1b1a17; border-radius: 6px;
+  }
+  .s25-scooter .seat {
+    position: absolute; left: 78px; bottom: 92px; width: 62px; height: 18px;
+    background: #1b1a17; border-radius: 8px;
+  }
+  .s25-scooter .lamp {
+    position: absolute; left: 196px; bottom: 120px; width: 18px; height: 18px;
+    border-radius: 50%; background: #f2b233; border: 4px solid #1b1a17;
+  }
+</style>
+
+<div id="root" data-composition-id="s25" data-width="1080" data-height="1920">
+  <div class="bg"><svg viewBox="0 0 1080 1920" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="Bangkok public park in the morning with a jogging path, bench and pond">
+  <!-- ================= SKY ================= -->
+  <rect width="1080" height="1920" fill="#8FBE63"/>
+  <rect width="1080" height="1060" fill="#CFE9EE"/>
+  <circle cx="836" cy="224" r="116" fill="#EAF3E4" opacity=".5"/>
+  <circle cx="836" cy="224" r="86" fill="#FBE7B0"/>
+
+  <!-- clouds -->
+  <g fill="#FBF6E7" stroke="#1B1A17" stroke-width="7" stroke-linejoin="round">
+    <path d="M118 262 Q 110 214 158 206 Q 174 168 216 178 Q 246 154 282 176 Q 324 168 332 210 Q 366 220 354 262 Z"/>
+    <path d="M580 178 Q 574 142 612 136 Q 624 108 658 116 Q 680 96 710 114 Q 744 108 750 142 Q 776 150 766 178 Z"/>
+  </g>
+
+  <!-- birds + kite -->
+  <g fill="none" stroke="#1B1A17" stroke-width="5" stroke-linecap="round">
+    <path d="M430 356 q 12 -12 24 0"/>
+    <path d="M462 338 q 12 -12 24 0"/>
+    <path d="M700 320 q 10 -10 20 0"/>
+  </g>
+  <g stroke="#1B1A17" stroke-width="5">
+    <path d="M292 288 l42 -34 l40 34 l-40 44 z" fill="#F2B233"/>
+    <path d="M292 288 l82 0" stroke-width="4"/>
+    <path d="M334 298 q-16 44 2 76 q20 34 2 72" fill="none" stroke-width="4"/>
+    <path d="M336 330 l-12 10 M338 362 l12 10 M342 404 l-10 10" fill="none" stroke-width="4"/>
+  </g>
+
+  <!-- ================= DISTANT CITY ================= -->
+  <g fill="#B7CFC8">
+    <rect x="18" y="704" width="106" height="320"/>
+    <rect x="138" y="640" width="76" height="384"/>
+    <rect x="228" y="736" width="86" height="288"/>
+    <rect x="700" y="622" width="88" height="402"/>
+    <rect x="802" y="700" width="96" height="324"/>
+    <rect x="912" y="748" width="150" height="276"/>
+  </g>
+  <g fill="#A5C2BE">
+    <rect x="24" y="720" width="8" height="304"/>
+    <rect x="144" y="656" width="8" height="368"/>
+    <rect x="710" y="638" width="8" height="386"/>
+    <rect x="816" y="716" width="8" height="308"/>
+  </g>
+  <g stroke="#96B5AF" stroke-width="3" opacity=".9">
+    <line x1="34" y1="760" x2="112" y2="760"/><line x1="34" y1="810" x2="112" y2="810"/>
+    <line x1="34" y1="860" x2="112" y2="860"/><line x1="34" y1="910" x2="112" y2="910"/>
+    <line x1="150" y1="700" x2="202" y2="700"/><line x1="150" y1="752" x2="202" y2="752"/>
+    <line x1="150" y1="804" x2="202" y2="804"/><line x1="150" y1="856" x2="202" y2="856"/>
+    <line x1="716" y1="684" x2="774" y2="684"/><line x1="716" y1="736" x2="774" y2="736"/>
+    <line x1="716" y1="788" x2="774" y2="788"/><line x1="716" y1="840" x2="774" y2="840"/>
+    <line x1="822" y1="760" x2="884" y2="760"/><line x1="822" y1="812" x2="884" y2="812"/>
+    <line x1="822" y1="864" x2="884" y2="864"/>
+  </g>
+  <!-- temple spire -->
+  <g stroke="#1B1A17" stroke-width="5">
+    <path d="M334 810 q0 -58 34 -58 q34 0 34 58 z" fill="#D9B25E"/>
+    <path d="M368 752 V 676" fill="none" stroke-width="6"/>
+    <path d="M352 712 h32 M356 692 h24" fill="none" stroke-width="4"/>
+    <rect x="322" y="808" width="92" height="18" fill="#C39A45"/>
+  </g>
+
+  <!-- ================= DISTANT TREE LINE ================= -->
+  <path d="M-40 1030 V 900 Q 20 836 96 852 Q 150 796 230 826 Q 300 780 370 828 Q 420 872 412 930 Q 452 974 420 1030 Z" fill="#6B9445" stroke="#1B1A17" stroke-width="7"/>
+  <path d="M620 1032 V 900 Q 680 826 760 846 Q 812 796 886 820 Q 952 776 1016 818 Q 1090 850 1110 930 V 1032 Z" fill="#6B9445" stroke="#1B1A17" stroke-width="7"/>
+  <path d="M120 900 Q 180 866 240 890 Q 276 860 330 886 Q 366 916 350 960 Q 300 992 240 968 Q 170 988 120 952 Q 96 924 120 900 Z" fill="#7FA650"/>
+  <path d="M700 892 Q 760 854 830 880 Q 888 848 944 882 Q 1000 910 976 956 Q 918 988 848 964 Q 780 990 720 952 Q 692 922 700 892 Z" fill="#7FA650"/>
+  <path d="M-10 980 Q 60 948 140 972 Q 220 950 300 982 Q 352 1010 330 1046 H -20 Z" fill="#5E8340"/>
+  <path d="M750 986 Q 830 952 910 978 Q 990 956 1090 990 V 1050 H 740 Z" fill="#5E8340"/>
+  <g fill="#8FBE63">
+    <ellipse cx="180" cy="900" rx="60" ry="26"/>
+    <ellipse cx="784" cy="888" rx="64" ry="28"/>
+    <ellipse cx="1000" cy="924" rx="56" ry="24"/>
+  </g>
+
+  <!-- ================= GRASS ================= -->
+  <rect x="0" y="980" width="1080" height="940" fill="#8FBE63"/>
+  <path d="M0 1240 L360 1210 L520 1920 H0 Z" fill="#A3CC74"/>
+  <path d="M760 1500 Q 880 1468 1080 1490 V 1920 H 720 Z" fill="#7FA650"/>
+  <path d="M0 1680 Q 140 1650 260 1682 V 1920 H0 Z" fill="#7FA650"/>
+
+  <!-- ================= POND ================= -->
+  <!-- far bank -->
+  <path d="M592 1050 Q 760 1002 1080 1016 V 1072 Q 840 1052 592 1096 Z" fill="#C9C0A8" stroke="#1B1A17" stroke-width="6"/>
+  <!-- sala across the pond -->
+  <g stroke="#1B1A17" stroke-width="6" stroke-linejoin="round">
+    <rect x="872" y="1008" width="152" height="20" fill="#B9A98C"/>
+    <rect x="884" y="960" width="14" height="50" fill="#7E4E2F"/>
+    <rect x="998" y="960" width="14" height="50" fill="#7E4E2F"/>
+    <rect x="932" y="940" width="32" height="70" fill="#7E4E2F"/>
+    <path d="M860 962 Q 948 902 1036 962 L1016 986 H 880 Z" fill="#C05A45"/>
+    <path d="M884 938 Q 948 890 1012 938 L 998 958 H 898 Z" fill="#E5533D"/>
+    <path d="M940 890 h16 v-26 h-16 z" fill="#F2B233"/>
+    <path d="M940 864 h16 v-18" fill="none"/>
+  </g>
+  <!-- water -->
+  <path d="M596 1096 C 730 1056 900 1052 1080 1066 L 1080 1306 C 900 1342 760 1338 690 1320 C 632 1260 604 1160 596 1096 Z" fill="#8CC9D9" stroke="#1B1A17" stroke-width="8"/>
+  <g stroke="#A9DCE5" stroke-width="4" fill="none" stroke-linecap="round">
+    <path d="M660 1130 q 40 -10 80 0"/>
+    <path d="M760 1104 q 50 -8 100 0"/>
+    <path d="M900 1082 q 46 -8 92 0"/>
+    <path d="M840 1140 q 42 -8 84 0"/>
+    <path d="M720 1188 q 40 -8 80 0"/>
+    <path d="M880 1210 q 44 -8 88 0"/>
+    <path d="M780 1260 q 40 -8 80 0"/>
+    <path d="M980 1240 q 34 -6 68 0"/>
+  </g>
+  <!-- lily pads + lotus -->
+  <g stroke="#1B1A17" stroke-width="4">
+    <path d="M836 1138 a26 14 0 1 0 26 -14 l-26 14 z" fill="#7FA650"/>
+    <path d="M930 1206 a22 12 0 1 0 22 -12 l-22 12 z" fill="#6B9445"/>
+    <path d="M1010 1116 a18 10 0 1 0 18 -10 l-18 10 z" fill="#7FA650"/>
+    <g fill="#EFA7B4">
+      <path d="M856 1104 q-16 -18 4 -30 q16 14 14 30 z"/>
+      <path d="M878 1102 q-4 -22 16 -26 q6 18 -6 30 z"/>
+    </g>
+    <circle cx="866" cy="1102" r="7" fill="#F2B233"/>
+  </g>
+  <!-- near bank stones -->
+  <g fill="#C9C0A8" stroke="#1B1A17" stroke-width="5">
+    <rect x="688" y="1300" width="62" height="26" rx="12" transform="rotate(-4 719 1313)"/>
+    <rect x="748" y="1308" width="58" height="24" rx="11" transform="rotate(2 777 1320)"/>
+    <rect x="806" y="1306" width="64" height="26" rx="12" transform="rotate(-2 838 1319)"/>
+    <rect x="868" y="1310" width="56" height="24" rx="11" transform="rotate(3 896 1322)"/>
+    <rect x="922" y="1304" width="62" height="26" rx="12" transform="rotate(-2 953 1317)"/>
+    <rect x="984" y="1310" width="58" height="24" rx="11" transform="rotate(2 1013 1322)"/>
+  </g>
+
+  <!-- ================= JOGGING PATH ================= -->
+  <path d="M110 1920 C 230 1690 340 1480 440 1330 L 620 1330 C 560 1530 530 1720 620 1920 Z" fill="#D3A06F" stroke="#1B1A17" stroke-width="8"/>
+  <g stroke="#C08A55" stroke-width="4" fill="none">
+    <path d="M400 1448 Q 500 1438 594 1450"/>
+    <path d="M374 1584 Q 486 1570 580 1586"/>
+    <path d="M300 1760 Q 450 1744 596 1764"/>
+    <path d="M262 1882 Q 430 1868 612 1886"/>
+  </g>
+  <g stroke="#B98B60" stroke-width="3" opacity=".8" fill="none">
+    <path d="M470 1408 q 6 20 0 38"/>
+    <path d="M470 1520 q 6 22 0 40"/>
+    <path d="M456 1660 q 6 22 0 40"/>
+  </g>
+
+  <!-- ================= BENCH ================= -->
+  <ellipse cx="246" cy="1428" rx="170" ry="20" fill="#6B9445" opacity=".55"/>
+  <g stroke="#1B1A17" stroke-width="7" stroke-linejoin="round">
+    <!-- back frame -->
+    <rect x="96" y="1130" width="18" height="300" fill="#3F4A42"/>
+    <rect x="386" y="1130" width="18" height="300" fill="#3F4A42"/>
+    <rect x="104" y="1150" width="292" height="24" fill="#A9673B"/>
+    <rect x="104" y="1190" width="292" height="24" fill="#A9673B"/>
+    <rect x="104" y="1230" width="292" height="24" fill="#A9673B"/>
+    <!-- seat -->
+    <rect x="84" y="1286" width="332" height="26" fill="#A9673B"/>
+    <rect x="84" y="1320" width="332" height="24" fill="#A9673B"/>
+    <!-- legs -->
+    <rect x="104" y="1344" width="16" height="86" fill="#3F4A42" transform="rotate(6 112 1387)"/>
+    <rect x="382" y="1344" width="16" height="86" fill="#3F4A42" transform="rotate(-6 390 1387)"/>
+  </g>
+  <!-- bird on bench back -->
+  <g stroke="#1B1A17" stroke-width="4">
+    <ellipse cx="356" cy="1138" rx="15" ry="11" fill="#8CC9D9"/>
+    <circle cx="368" cy="1128" r="8" fill="#8CC9D9"/>
+    <path d="M376 1128 l12 5 l-12 5 z" fill="#F2B233"/>
+    <circle cx="371" cy="1126" r="2" fill="#1B1A17" stroke="none"/>
+    <path d="M346 1148 l-14 10" fill="none"/>
+  </g>
+
+  <!-- ================= FOREGROUND TREES ================= -->
+  <!-- left trunk -->
+  <path d="M34 1920 L30 1440 Q 26 1160 70 980 L 118 988 Q 94 1220 106 1440 L 118 1920 Z" fill="#8A5A3B" stroke="#1B1A17" stroke-width="8"/>
+  <path d="M82 980 Q 88 840 36 730 L 74 700 Q 112 812 120 992 Z" fill="#8A5A3B" stroke="#1B1A17" stroke-width="8"/>
+  <path d="M100 1000 Q 190 904 262 892 L 268 924 Q 192 948 128 1030 Z" fill="#8A5A3B" stroke="#1B1A17" stroke-width="8"/>
+  <g stroke="#6E4529" stroke-width="3" fill="none">
+    <path d="M54 1600 q 14 60 6 220"/>
+    <path d="M84 1500 q 4 80 -2 180"/>
+  </g>
+  <!-- left canopy -->
+  <path d="M-40 -40 H 292 Q 300 84 232 144 Q 292 232 218 292 Q 270 384 184 420 Q 218 520 128 548 Q 156 642 62 646 Q 34 700 -40 692 Z" fill="#7FA650" stroke="#1B1A17" stroke-width="8"/>
+  <g fill="#6B9445">
+    <path d="M-20 96 Q 60 64 130 106 Q 150 160 96 190 Q 30 206 -20 170 Z"/>
+    <path d="M90 240 Q 178 206 242 260 Q 250 320 186 344 Q 110 356 78 308 Z"/>
+    <path d="M20 380 Q 100 344 160 392 Q 174 456 110 486 Q 40 500 6 446 Z"/>
+    <path d="M-30 520 Q 64 492 124 540 Q 124 606 56 626 Q -6 636 -30 586 Z"/>
+  </g>
+  <g fill="#8FBE63">
+    <path d="M30 156 Q 92 132 148 166 Q 150 206 94 222 Q 40 228 22 196 Z"/>
+    <path d="M130 330 Q 194 310 238 348 Q 238 388 190 402 Q 142 408 122 376 Z"/>
+    <path d="M58 470 Q 110 452 150 480 Q 152 518 108 532 Q 62 538 44 506 Z"/>
+  </g>
+  <g fill="#EFA7B4" stroke="#1B1A17" stroke-width="3">
+    <circle cx="228" cy="178" r="7"/><circle cx="244" cy="196" r="6"/>
+    <circle cx="154" cy="300" r="7"/><circle cx="170" cy="316" r="5"/>
+    <circle cx="34" cy="432" r="6"/><circle cx="20" cy="452" r="5"/>
+  </g>
+
+  <!-- right trunk -->
+  <path d="M1046 1920 L1052 1420 Q 1058 1100 1014 906 L 966 916 Q 996 1160 984 1420 L 972 1920 Z" fill="#8A5A3B" stroke="#1B1A17" stroke-width="8"/>
+  <path d="M998 920 Q 986 796 1046 700 L 1084 730 Q 1036 816 1016 940 Z" fill="#8A5A3B" stroke="#1B1A17" stroke-width="8"/>
+  <path d="M990 960 Q 912 880 848 872 L 842 904 Q 914 926 972 992 Z" fill="#8A5A3B" stroke="#1B1A17" stroke-width="8"/>
+  <g stroke="#6E4529" stroke-width="3" fill="none">
+    <path d="M1022 1560 q -12 90 -8 250"/>
+    <path d="M1004 1460 q -4 90 2 200"/>
+  </g>
+  <!-- right canopy -->
+  <path d="M1120 -40 H 806 Q 788 82 862 140 Q 800 236 878 292 Q 828 388 914 424 Q 880 522 968 548 Q 940 644 1032 646 Q 1060 700 1120 692 Z" fill="#7FA650" stroke="#1B1A17" stroke-width="8"/>
+  <g fill="#6B9445">
+    <path d="M1090 92 Q 1010 62 944 106 Q 926 160 982 188 Q 1050 200 1098 166 Z"/>
+    <path d="M980 238 Q 892 206 828 262 Q 820 322 884 344 Q 960 354 992 306 Z"/>
+    <path d="M1044 378 Q 966 344 906 394 Q 894 458 958 486 Q 1026 498 1062 446 Z"/>
+    <path d="M1110 520 Q 1018 494 958 542 Q 958 608 1026 626 Q 1088 634 1110 586 Z"/>
+  </g>
+  <g fill="#8FBE63">
+    <path d="M1046 154 Q 986 130 932 164 Q 930 204 986 218 Q 1040 224 1056 194 Z"/>
+    <path d="M942 330 Q 880 310 838 348 Q 838 388 886 400 Q 934 406 954 376 Z"/>
+    <path d="M1004 468 Q 952 450 912 478 Q 910 516 954 530 Q 1000 536 1018 506 Z"/>
+  </g>
+
+  <!-- ================= FLOWERS + GRASS DETAIL ================= -->
+  <g stroke="#1B1A17" stroke-width="4">
+    <g fill="#F2B233">
+      <circle cx="34" cy="1540" r="12"/><circle cx="68" cy="1570" r="10"/>
+      <circle cx="44" cy="1602" r="11"/><circle cx="86" cy="1610" r="9"/>
+      <circle cx="24" cy="1650" r="10"/>
+    </g>
+    <g fill="#7FA650" stroke-width="3">
+      <path d="M34 1552 v 50"/><path d="M68 1580 v 46"/><path d="M44 1614 v 42"/><path d="M86 1620 v 36"/>
+      <path d="M24 1662 v 30"/>
+    </g>
+  </g>
+  <g stroke="#1B1A17" stroke-width="3.5">
+    <g fill="#D96AA8">
+      <circle cx="1006" cy="1478" r="9"/><circle cx="1032" cy="1506" r="8"/>
+      <circle cx="1058" cy="1470" r="9"/><circle cx="1040" cy="1544" r="8"/>
+      <circle cx="1070" cy="1520" r="7"/>
+    </g>
+    <path d="M1006 1488 v 32 M1032 1514 v 34 M1058 1480 v 40" fill="none" stroke="#5E8340" stroke-width="4"/>
+  </g>
+  <g fill="none" stroke="#6B9445" stroke-width="5" stroke-linecap="round">
+    <path d="M196 1510 q -8 -28 4 -42"/>
+    <path d="M210 1522 q 2 -30 16 -40"/>
+    <path d="M700 1500 q -8 -26 4 -38"/>
+    <path d="M724 1540 q 4 -28 18 -36"/>
+    <path d="M60 1740 q -8 -24 4 -36"/>
+    <path d="M660 1840 q 2 -24 14 -32"/>
+    <path d="M1000 1740 q -6 -24 4 -34"/>
+  </g>
+  <g fill="#6B9445" stroke="#1B1A17" stroke-width="3">
+    <path d="M148 1490 q 18 -12 32 2 q -18 12 -32 -2 z"/>
+    <path d="M846 1478 q 18 -12 32 2 q -18 12 -32 -2 z"/>
+    <path d="M580 1702 q 16 -10 28 2 q -16 10 -28 -2 z"/>
+  </g>
+</svg></div>
+  <div class="stage">
+    <div class="s25-line" style="left: 618px; top: 930px; width: 120px"></div>
+    <div class="s25-line" style="left: 646px; top: 1060px; width: 96px"></div>
+    <div class="s25-line" style="left: 600px; top: 1190px; width: 140px"></div>
+    <div class="s25-line" style="left: 170px; top: 980px; width: 96px"></div>
+    <div class="s25-line" style="left: 144px; top: 1118px; width: 76px"></div>
+
+    <div class="char s25-cast s25-runner" id="s25-prot">﻿<svg viewBox="0 0 300 420" xmlns="http://www.w3.org/2000/svg">
+  <ellipse cx="150" cy="410" rx="78" ry="8" fill="#000" opacity=".16"/>
+  <g id="prot-leg-l">
+    <rect x="110" y="326" width="32" height="66" rx="14" fill="#2E3B55" stroke="#1B1A17" stroke-width="7"/>
+    <rect x="103" y="387" width="46" height="19.5" rx="10" fill="#1B1A17" stroke="#1B1A17" stroke-width="7"/>
+  </g>
+  <g id="prot-leg-r">
+    <rect x="158" y="326" width="32" height="66" rx="14" fill="#2E3B55" stroke="#1B1A17" stroke-width="7"/>
+    <rect x="151" y="387" width="46" height="19.5" rx="10" fill="#1B1A17" stroke="#1B1A17" stroke-width="7"/>
+  </g>
+  <rect x="86" y="230" width="128" height="142" rx="38" fill="#F2B233" stroke="#1B1A17" stroke-width="7"/>
+  <path d="M118 250 L150 300 L182 250" fill="none" stroke="#D99322" stroke-width="6" stroke-linecap="round"/>
+  <g id="prot-arm-l" style="transform-origin:100px 250px">
+    <circle cx="84" cy="250" r="26" fill="#F2B233" stroke="#1B1A17" stroke-width="7"/>
+    <rect x="52" y="240" width="42" height="124" rx="21" fill="#F2B233" stroke="#1B1A17" stroke-width="7"/>
+    <circle cx="73" cy="366" r="21" fill="#F2C9A0" stroke="#1B1A17" stroke-width="7"/>
+  </g>
+  <g id="prot-arm-r" style="transform-origin:200px 250px">
+    <circle cx="216" cy="250" r="26" fill="#F2B233" stroke="#1B1A17" stroke-width="7"/>
+    <rect x="206" y="240" width="42" height="124" rx="21" fill="#F2B233" stroke="#1B1A17" stroke-width="7"/>
+    <circle cx="227" cy="366" r="21" fill="#F2C9A0" stroke="#1B1A17" stroke-width="7"/>
+  </g>
+  <rect x="130" y="204" width="40" height="46" fill="#F2C9A0" stroke="#1B1A17" stroke-width="7"/>
+  <circle cx="64" cy="138" r="17" fill="#F2C9A0" stroke="#1B1A17" stroke-width="7"/>
+  <circle cx="236" cy="138" r="17" fill="#F2C9A0" stroke="#1B1A17" stroke-width="7"/>
+  <ellipse cx="150" cy="128" rx="84" ry="92" fill="#F2C9A0" stroke="#1B1A17" stroke-width="7"/>
+  <path d="M62 140 C58 58, 112 28, 150 28 C188 28, 242 58, 238 140 C220 96, 190 84, 150 84 C110 84, 80 96, 62 140 Z" fill="#1B1A17"/>
+  <path d="M62 132 C78 112, 92 104, 112 100" fill="none" stroke="#3A2E28" stroke-width="10" stroke-linecap="round"/>
+  <ellipse cx="116" cy="132" rx="17" ry="21" fill="#FFFDF6" stroke="#1B1A17" stroke-width="5"/>
+  <ellipse cx="184" cy="132" rx="17" ry="21" fill="#FFFDF6" stroke="#1B1A17" stroke-width="5"/>
+  <circle id="prot-pupil-l" cx="119" cy="134" r="7" fill="#1B1A17"/>
+  <circle id="prot-pupil-r" cx="187" cy="134" r="7" fill="#1B1A17"/>
+  <rect id="prot-lid-l" x="99" y="111" width="34" height="24" rx="6" fill="#F2C9A0" stroke="#1B1A17" stroke-width="4"/>
+  <rect id="prot-lid-r" x="167" y="111" width="34" height="24" rx="6" fill="#F2C9A0" stroke="#1B1A17" stroke-width="4"/>
+  <g id="prot-brow-normal">
+    <path d="M100 104 Q116 94 132 102" fill="none" stroke="#1B1A17" stroke-width="8" stroke-linecap="round"/>
+    <path d="M168 102 Q184 94 200 104" fill="none" stroke="#1B1A17" stroke-width="8" stroke-linecap="round"/>
+  </g>
+  <g id="prot-brow-shock" opacity="0">
+    <path d="M100 92 Q116 80 132 90" fill="none" stroke="#1B1A17" stroke-width="8" stroke-linecap="round"/>
+    <path d="M168 90 Q184 80 200 92" fill="none" stroke="#1B1A17" stroke-width="8" stroke-linecap="round"/>
+  </g>
+  <g id="prot-brow-sad" opacity="0">
+    <path d="M100 106 Q116 112 132 100" fill="none" stroke="#1B1A17" stroke-width="8" stroke-linecap="round"/>
+    <path d="M168 100 Q184 112 200 106" fill="none" stroke="#1B1A17" stroke-width="8" stroke-linecap="round"/>
+  </g>
+  <path d="M150 150 Q144 168 154 172" fill="none" stroke="#1B1A17" stroke-width="6" stroke-linecap="round"/>
+  <g id="prot-mouth-flat"><path d="M126 186 Q150 192 174 186" fill="none" stroke="#1B1A17" stroke-width="7" stroke-linecap="round"/></g>
+  <g id="prot-mouth-smile" opacity="0"><path d="M120 180 Q150 210 180 180" fill="none" stroke="#1B1A17" stroke-width="7" stroke-linecap="round"/></g>
+  <g id="prot-mouth-shock" opacity="0"><ellipse cx="150" cy="190" rx="18" ry="24" fill="#7A3B2E" stroke="#1B1A17" stroke-width="5"/></g>
+  <g id="prot-mouth-open" opacity="0"><ellipse cx="150" cy="192" rx="14" ry="12" fill="#7A3B2E" stroke="#1B1A17" stroke-width="5"/></g>
+  <g id="prot-blush" opacity="0"><ellipse cx="100" cy="166" rx="18" ry="10" fill="#E4543C" opacity=".55"/><ellipse cx="200" cy="166" rx="18" ry="10" fill="#E4543C" opacity=".55"/></g>
+  <path id="prot-sweat" d="M244 116 Q254 138 244 148 Q234 138 244 116" fill="#8CC9D9" stroke="#1B1A17" stroke-width="4" opacity="0"/>
+</svg>
+</div>
+    <div class="char s25-cast s25-runner s25-chaser" id="s25-barista"><svg viewBox="0 0 300 420" xmlns="http://www.w3.org/2000/svg">
+  <ellipse cx="150" cy="410" rx="82" ry="8" fill="#000" opacity=".16"/>
+
+  <!-- sparkle diamonds (hidden until animated) -->
+  <g id="hunk-sparkle" opacity="0">
+    <path d="M44 50 L46.8 57.2 L54 60 L46.8 62.8 L44 70 L41.2 62.8 L34 60 L41.2 57.2 Z" fill="#FFD24A" stroke="#1B1A17" stroke-width="3"/>
+    <path d="M256 54 L259.4 62.6 L268 66 L259.4 69.4 L256 78 L252.6 69.4 L244 66 L252.6 62.6 Z" fill="#FFD24A" stroke="#1B1A17" stroke-width="3"/>
+    <path d="M268 149 L270.5 155.5 L277 158 L270.5 160.5 L268 167 L265.5 160.5 L259 158 L265.5 155.5 Z" fill="#FFFDF6" stroke="#1B1A17" stroke-width="3"/>
+    <path d="M32 160 L34.2 165.8 L40 168 L34.2 170.2 L32 176 L29.8 170.2 L24 168 L29.8 165.8 Z" fill="#FFFDF6" stroke="#1B1A17" stroke-width="3"/>
+    <path d="M70 17 L72 22 L77 24 L72 26 L70 31 L68 26 L63 24 L68 22 Z" fill="#FFD24A" stroke="#1B1A17" stroke-width="3"/>
+    <path d="M228 12 L230.2 17.8 L236 20 L230.2 22.2 L228 28 L225.8 22.2 L220 20 L225.8 17.8 Z" fill="#FFD24A" stroke="#1B1A17" stroke-width="3"/>
+    <path d="M278 229 L280 234 L285 236 L280 238 L278 243 L276 238 L271 236 L276 234 Z" fill="#FFFDF6" stroke="#1B1A17" stroke-width="3"/>
+    <path d="M22 239 L24.5 245.5 L31 248 L24.5 250.5 L22 257 L19.5 250.5 L13 248 L19.5 245.5 Z" fill="#FFD24A" stroke="#1B1A17" stroke-width="3"/>
+  </g>
+
+  <!-- legs, hips and shoes -->
+  <g id="hunk-leg-l">
+    <rect x="109" y="326" width="34" height="66" rx="14" fill="#2E3B55" stroke="#1B1A17" stroke-width="7"/>
+    <rect x="103" y="387" width="46" height="19.5" rx="10" fill="#1B1A17" stroke="#1B1A17" stroke-width="7"/>
+  </g>
+  <g id="hunk-leg-r">
+    <rect x="157" y="326" width="34" height="66" rx="14" fill="#2E3B55" stroke="#1B1A17" stroke-width="7"/>
+    <rect x="151" y="387" width="46" height="19.5" rx="10" fill="#1B1A17" stroke="#1B1A17" stroke-width="7"/>
+  </g>
+  <rect x="104" y="330" width="92" height="44" rx="14" fill="#2E3B55" stroke="#1B1A17" stroke-width="7"/>
+
+  <!-- body -->
+  <g id="hunk-body">
+    <rect x="131" y="146" width="38" height="58" fill="#D89A5E" stroke="#1B1A17" stroke-width="7"/>
+    <path d="M92 198 C102 186 122 180 150 180 C178 180 198 186 208 198 C212 218 208 244 202 268 C197 296 195 322 192 340 C190 358 176 366 150 366 C124 366 110 358 108 340 C105 322 103 296 98 268 C92 244 88 218 92 198 Z"
+          fill="#D89A5E" stroke="#1B1A17" stroke-width="7" stroke-linejoin="round"/>
+    <path d="M124 206 Q138 214 148 210 M176 206 Q162 214 152 210" fill="none" stroke="#B87A3F" stroke-width="4" stroke-linecap="round"/>
+
+    <!-- tight white tank top -->
+    <path d="M102 194 C110 187 130 183 150 183 C170 183 190 187 198 194 C206 218 202 244 197 268 C192 296 190 326 188 342 C186 360 170 364 150 364 C130 364 114 360 112 342 C110 326 108 296 103 268 C98 244 94 218 102 194 Z"
+          fill="#FFFDF6" stroke="#1B1A17" stroke-width="7" stroke-linejoin="round"/>
+    <path d="M126 187 C131 207 140 218 150 218 C160 218 169 207 174 187 C166 183 158 181 150 181 C142 181 134 183 126 187 Z"
+          fill="#D89A5E" stroke="#1B1A17" stroke-width="7" stroke-linejoin="round"/>
+
+    <!-- fabric seams and muscle definition -->
+    <path d="M118 194 C112 212 110 232 110 252" fill="none" stroke="#D9CFBB" stroke-width="4" stroke-linecap="round"/>
+    <path d="M182 194 C188 212 190 232 190 252" fill="none" stroke="#D9CFBB" stroke-width="4" stroke-linecap="round"/>
+    <path d="M122 238 Q134 248 148 242 M178 238 Q166 248 152 242" fill="none" stroke="#D9CFBB" stroke-width="4" stroke-linecap="round"/>
+    <path d="M120 242 Q150 256 180 242" fill="none" stroke="#D9CFBB" stroke-width="5" stroke-linecap="round"/>
+    <path d="M150 218 L150 262" fill="none" stroke="#D9CFBB" stroke-width="4" stroke-linecap="round"/>
+    <path d="M150 266 L150 330" fill="none" stroke="#D9CFBB" stroke-width="4" stroke-linecap="round"/>
+    <path d="M136 292 Q150 300 164 292 M138 314 Q150 322 162 314" fill="none" stroke="#D9CFBB" stroke-width="4" stroke-linecap="round"/>
+    <path d="M124 276 Q118 300 124 322 M176 276 Q182 300 176 322" fill="none" stroke="#D9CFBB" stroke-width="4" stroke-linecap="round"/>
+    <path d="M112 338 Q150 352 188 338" fill="none" stroke="#E8DEC9" stroke-width="5" stroke-linecap="round"/>
+    <path d="M110 230 Q118 250 114 268" fill="none" stroke="#D9CFBB" stroke-width="4" stroke-linecap="round"/>
+    <path d="M190 230 Q182 250 186 268" fill="none" stroke="#D9CFBB" stroke-width="4" stroke-linecap="round"/>
+  </g>
+
+  <!-- arms (drawn over the torso so the shoulder joints stay visually attached) -->
+  <g id="hunk-arm-l" style="transform-box:view-box;transform-origin:114px 212px">
+    <circle cx="106" cy="206" r="19" fill="#D89A5E" stroke="#1B1A17" stroke-width="7"/>
+    <path d="M106 202 C88 198 72 208 66 228 C60 248 58 272 62 294 C64 312 64 326 66 336 C68 348 80 354 90 348 C99 343 102 334 100 322 C97 304 98 284 102 266 C106 248 112 230 114 214 Z"
+          fill="#D89A5E" stroke="#1B1A17" stroke-width="7" stroke-linejoin="round"/>
+    <path d="M78 238 C72 252 71 268 74 282" fill="none" stroke="#B87A3F" stroke-width="5" stroke-linecap="round"/>
+    <path d="M100 218 Q90 224 84 236" fill="none" stroke="#B87A3F" stroke-width="4" stroke-linecap="round"/>
+    <path d="M70 294 Q78 300 84 296" fill="none" stroke="#B87A3F" stroke-width="4" stroke-linecap="round"/>
+    <ellipse cx="86" cy="360" rx="18" ry="16" fill="#D89A5E" stroke="#1B1A17" stroke-width="7"/>
+    <path d="M74 356 Q78 362 84 364" fill="none" stroke="#B87A3F" stroke-width="3.5" stroke-linecap="round"/>
+  </g>
+
+  <g id="hunk-arm-r" style="transform-box:view-box;transform-origin:186px 212px">
+    <circle cx="194" cy="206" r="19" fill="#D89A5E" stroke="#1B1A17" stroke-width="7"/>
+    <path d="M194 202 C212 198 228 208 234 228 C240 248 242 272 238 294 C236 312 236 326 234 336 C232 348 220 354 210 348 C201 343 198 334 200 322 C203 304 202 284 198 266 C194 248 188 230 186 214 Z"
+          fill="#D89A5E" stroke="#1B1A17" stroke-width="7" stroke-linejoin="round"/>
+    <path d="M222 238 C228 252 229 268 226 282" fill="none" stroke="#B87A3F" stroke-width="5" stroke-linecap="round"/>
+    <path d="M200 218 Q210 224 216 236" fill="none" stroke="#B87A3F" stroke-width="4" stroke-linecap="round"/>
+    <path d="M230 294 Q222 300 216 296" fill="none" stroke="#B87A3F" stroke-width="4" stroke-linecap="round"/>
+    <ellipse cx="214" cy="360" rx="18" ry="16" fill="#D89A5E" stroke="#1B1A17" stroke-width="7"/>
+    <path d="M226 356 Q222 362 216 364" fill="none" stroke="#B87A3F" stroke-width="3.5" stroke-linecap="round"/>
+  </g>
+
+  <!-- head -->
+  <g id="hunk-head" style="transform-box:view-box;transform-origin:150px 164px">
+    <ellipse cx="92" cy="106" rx="11" ry="15" fill="#D89A5E" stroke="#1B1A17" stroke-width="7"/>
+    <ellipse cx="208" cy="106" rx="11" ry="15" fill="#D89A5E" stroke="#1B1A17" stroke-width="7"/>
+    <path d="M96 102 Q96 108 100 111" fill="none" stroke="#B87A3F" stroke-width="3.5" stroke-linecap="round"/>
+    <path d="M204 102 Q204 108 200 111" fill="none" stroke="#B87A3F" stroke-width="3.5" stroke-linecap="round"/>
+
+    <path d="M90 92 C90 56 114 34 150 34 C186 34 210 56 210 92 C210 120 206 140 196 152 C186 164 170 170 150 170 C130 170 114 164 104 152 C94 140 90 120 90 92 Z"
+          fill="#D89A5E" stroke="#1B1A17" stroke-width="7" stroke-linejoin="round"/>
+
+    <!-- styled hair -->
+    <path d="M88 102 C88 60 110 34 150 34 C190 34 212 60 212 102 C206 92 202 82 200 72 C184 78 166 78 150 76 C132 74 114 76 100 72 C98 82 94 92 88 102 Z"
+          fill="#2B201B" stroke="#1B1A17" stroke-width="7" stroke-linejoin="round"/>
+    <path d="M102 74 C102 42 126 16 158 14 C188 12 210 30 216 58 C204 50 192 46 182 50 C194 38 194 26 188 20 C182 36 166 50 142 58 C126 64 112 70 102 74 Z"
+          fill="#2B201B" stroke="#1B1A17" stroke-width="7" stroke-linejoin="round"/>
+    <path d="M116 48 C128 30 146 20 164 18" fill="none" stroke="#4A382E" stroke-width="7" stroke-linecap="round"/>
+    <path d="M172 38 C182 34 192 38 199 46" fill="none" stroke="#4A382E" stroke-width="6" stroke-linecap="round"/>
+    <circle cx="207" cy="120" r="4" fill="#F2B233" stroke="#1B1A17" stroke-width="2.5"/>
+
+    <!-- eyes -->
+    <ellipse cx="122" cy="106" rx="16" ry="19" fill="#FFFDF6" stroke="#1B1A17" stroke-width="5"/>
+    <ellipse cx="178" cy="106" rx="16" ry="19" fill="#FFFDF6" stroke="#1B1A17" stroke-width="5"/>
+    <path d="M107 98 Q122 91 137 98" fill="none" stroke="#1B1A17" stroke-width="5" stroke-linecap="round"/>
+    <path d="M163 98 Q178 91 193 98" fill="none" stroke="#1B1A17" stroke-width="5" stroke-linecap="round"/>
+    <circle id="hunk-pupil-l" cx="124" cy="108" r="8" fill="#1B1A17"/>
+    <circle id="hunk-pupil-r" cx="176" cy="108" r="8" fill="#1B1A17"/>
+    <circle cx="118" cy="101" r="3.2" fill="#FFFDF6"/>
+    <circle cx="170" cy="101" r="3.2" fill="#FFFDF6"/>
+    <circle cx="128" cy="114" r="2" fill="#FFFDF6"/>
+    <circle cx="180" cy="114" r="2" fill="#FFFDF6"/>
+    <circle cx="168" cy="130" r="2.4" fill="#7A4A2A"/>
+
+    <!-- brows -->
+    <g id="hunk-brow-normal">
+      <path d="M100 92 Q118 86 136 90" fill="none" stroke="#1B1A17" stroke-width="8" stroke-linecap="round"/>
+      <path d="M164 86 Q182 80 200 88" fill="none" stroke="#1B1A17" stroke-width="8" stroke-linecap="round"/>
+    </g>
+    <g id="hunk-brow-shock" opacity="0">
+      <path d="M100 84 Q118 70 136 82" fill="none" stroke="#1B1A17" stroke-width="8" stroke-linecap="round"/>
+      <path d="M164 78 Q182 64 200 78" fill="none" stroke="#1B1A17" stroke-width="8" stroke-linecap="round"/>
+    </g>
+    <g id="hunk-brow-sad" opacity="0">
+      <path d="M100 94 Q118 96 136 82" fill="none" stroke="#1B1A17" stroke-width="8" stroke-linecap="round"/>
+      <path d="M164 82 Q182 96 200 94" fill="none" stroke="#1B1A17" stroke-width="8" stroke-linecap="round"/>
+    </g>
+
+    <!-- nose and cheek -->
+    <path d="M150 114 C146 126 144 136 150 140" fill="none" stroke="#1B1A17" stroke-width="6" stroke-linecap="round"/>
+    <path d="M144 142 Q150 146 156 143" fill="none" stroke="#B87A3F" stroke-width="4" stroke-linecap="round"/>
+    <path d="M110 128 Q118 136 128 134" fill="none" stroke="#B87A3F" stroke-width="4" stroke-linecap="round"/>
+    <path d="M190 128 Q182 136 172 134" fill="none" stroke="#B87A3F" stroke-width="4" stroke-linecap="round"/>
+
+    <!-- mouths -->
+    <g id="hunk-mouth-flat"><path d="M126 152 Q150 158 174 146" fill="none" stroke="#1B1A17" stroke-width="7" stroke-linecap="round"/></g>
+    <g id="hunk-mouth-smile" opacity="0">
+      <path d="M124 148 Q150 176 176 146" fill="none" stroke="#1B1A17" stroke-width="7" stroke-linecap="round"/>
+      <path d="M178 146 Q182 142 180 138" fill="none" stroke="#1B1A17" stroke-width="5" stroke-linecap="round"/>
+    </g>
+    <g id="hunk-mouth-shock" opacity="0"><ellipse cx="150" cy="154" rx="11" ry="13" fill="#7A3B2E" stroke="#1B1A17" stroke-width="5"/></g>
+    <g id="hunk-mouth-open" opacity="0">
+      <ellipse cx="150" cy="154" rx="19" ry="11" fill="#7A3B2E" stroke="#1B1A17" stroke-width="5"/>
+      <path d="M134 148 Q150 142 166 148 Q150 154 134 148 Z" fill="#FFFDF6"/>
+    </g>
+  </g>
+</svg>
+</div>
+    <div class="char s25-cast s25-runner s25-chaser" id="s25-h1"><svg viewBox="0 0 300 420" xmlns="http://www.w3.org/2000/svg">
+  <ellipse cx="150" cy="410" rx="82" ry="8" fill="#000" opacity=".16"/>
+
+  <!-- sparkle diamonds (hidden until animated) -->
+  <g id="hunk-sparkle" opacity="0">
+    <path d="M44 50 L46.8 57.2 L54 60 L46.8 62.8 L44 70 L41.2 62.8 L34 60 L41.2 57.2 Z" fill="#FFD24A" stroke="#1B1A17" stroke-width="3"/>
+    <path d="M256 54 L259.4 62.6 L268 66 L259.4 69.4 L256 78 L252.6 69.4 L244 66 L252.6 62.6 Z" fill="#FFD24A" stroke="#1B1A17" stroke-width="3"/>
+    <path d="M268 149 L270.5 155.5 L277 158 L270.5 160.5 L268 167 L265.5 160.5 L259 158 L265.5 155.5 Z" fill="#FFFDF6" stroke="#1B1A17" stroke-width="3"/>
+    <path d="M32 160 L34.2 165.8 L40 168 L34.2 170.2 L32 176 L29.8 170.2 L24 168 L29.8 165.8 Z" fill="#FFFDF6" stroke="#1B1A17" stroke-width="3"/>
+    <path d="M70 17 L72 22 L77 24 L72 26 L70 31 L68 26 L63 24 L68 22 Z" fill="#FFD24A" stroke="#1B1A17" stroke-width="3"/>
+    <path d="M228 12 L230.2 17.8 L236 20 L230.2 22.2 L228 28 L225.8 22.2 L220 20 L225.8 17.8 Z" fill="#FFD24A" stroke="#1B1A17" stroke-width="3"/>
+    <path d="M278 229 L280 234 L285 236 L280 238 L278 243 L276 238 L271 236 L276 234 Z" fill="#FFFDF6" stroke="#1B1A17" stroke-width="3"/>
+    <path d="M22 239 L24.5 245.5 L31 248 L24.5 250.5 L22 257 L19.5 250.5 L13 248 L19.5 245.5 Z" fill="#FFD24A" stroke="#1B1A17" stroke-width="3"/>
+  </g>
+
+  <!-- legs, hips and shoes -->
+  <g id="hunk-leg-l">
+    <rect x="109" y="326" width="34" height="66" rx="14" fill="#2E3B55" stroke="#1B1A17" stroke-width="7"/>
+    <rect x="103" y="387" width="46" height="19.5" rx="10" fill="#1B1A17" stroke="#1B1A17" stroke-width="7"/>
+  </g>
+  <g id="hunk-leg-r">
+    <rect x="157" y="326" width="34" height="66" rx="14" fill="#2E3B55" stroke="#1B1A17" stroke-width="7"/>
+    <rect x="151" y="387" width="46" height="19.5" rx="10" fill="#1B1A17" stroke="#1B1A17" stroke-width="7"/>
+  </g>
+  <rect x="104" y="330" width="92" height="44" rx="14" fill="#2E3B55" stroke="#1B1A17" stroke-width="7"/>
+
+  <!-- body -->
+  <g id="hunk-body">
+    <rect x="131" y="146" width="38" height="58" fill="#D89A5E" stroke="#1B1A17" stroke-width="7"/>
+    <path d="M92 198 C102 186 122 180 150 180 C178 180 198 186 208 198 C212 218 208 244 202 268 C197 296 195 322 192 340 C190 358 176 366 150 366 C124 366 110 358 108 340 C105 322 103 296 98 268 C92 244 88 218 92 198 Z"
+          fill="#D89A5E" stroke="#1B1A17" stroke-width="7" stroke-linejoin="round"/>
+    <path d="M124 206 Q138 214 148 210 M176 206 Q162 214 152 210" fill="none" stroke="#B87A3F" stroke-width="4" stroke-linecap="round"/>
+
+    <!-- tight white tank top -->
+    <path d="M102 194 C110 187 130 183 150 183 C170 183 190 187 198 194 C206 218 202 244 197 268 C192 296 190 326 188 342 C186 360 170 364 150 364 C130 364 114 360 112 342 C110 326 108 296 103 268 C98 244 94 218 102 194 Z"
+          fill="#FFFDF6" stroke="#1B1A17" stroke-width="7" stroke-linejoin="round"/>
+    <path d="M126 187 C131 207 140 218 150 218 C160 218 169 207 174 187 C166 183 158 181 150 181 C142 181 134 183 126 187 Z"
+          fill="#D89A5E" stroke="#1B1A17" stroke-width="7" stroke-linejoin="round"/>
+
+    <!-- fabric seams and muscle definition -->
+    <path d="M118 194 C112 212 110 232 110 252" fill="none" stroke="#D9CFBB" stroke-width="4" stroke-linecap="round"/>
+    <path d="M182 194 C188 212 190 232 190 252" fill="none" stroke="#D9CFBB" stroke-width="4" stroke-linecap="round"/>
+    <path d="M122 238 Q134 248 148 242 M178 238 Q166 248 152 242" fill="none" stroke="#D9CFBB" stroke-width="4" stroke-linecap="round"/>
+    <path d="M120 242 Q150 256 180 242" fill="none" stroke="#D9CFBB" stroke-width="5" stroke-linecap="round"/>
+    <path d="M150 218 L150 262" fill="none" stroke="#D9CFBB" stroke-width="4" stroke-linecap="round"/>
+    <path d="M150 266 L150 330" fill="none" stroke="#D9CFBB" stroke-width="4" stroke-linecap="round"/>
+    <path d="M136 292 Q150 300 164 292 M138 314 Q150 322 162 314" fill="none" stroke="#D9CFBB" stroke-width="4" stroke-linecap="round"/>
+    <path d="M124 276 Q118 300 124 322 M176 276 Q182 300 176 322" fill="none" stroke="#D9CFBB" stroke-width="4" stroke-linecap="round"/>
+    <path d="M112 338 Q150 352 188 338" fill="none" stroke="#E8DEC9" stroke-width="5" stroke-linecap="round"/>
+    <path d="M110 230 Q118 250 114 268" fill="none" stroke="#D9CFBB" stroke-width="4" stroke-linecap="round"/>
+    <path d="M190 230 Q182 250 186 268" fill="none" stroke="#D9CFBB" stroke-width="4" stroke-linecap="round"/>
+  </g>
+
+  <!-- arms (drawn over the torso so the shoulder joints stay visually attached) -->
+  <g id="hunk-arm-l" style="transform-box:view-box;transform-origin:114px 212px">
+    <circle cx="106" cy="206" r="19" fill="#D89A5E" stroke="#1B1A17" stroke-width="7"/>
+    <path d="M106 202 C88 198 72 208 66 228 C60 248 58 272 62 294 C64 312 64 326 66 336 C68 348 80 354 90 348 C99 343 102 334 100 322 C97 304 98 284 102 266 C106 248 112 230 114 214 Z"
+          fill="#D89A5E" stroke="#1B1A17" stroke-width="7" stroke-linejoin="round"/>
+    <path d="M78 238 C72 252 71 268 74 282" fill="none" stroke="#B87A3F" stroke-width="5" stroke-linecap="round"/>
+    <path d="M100 218 Q90 224 84 236" fill="none" stroke="#B87A3F" stroke-width="4" stroke-linecap="round"/>
+    <path d="M70 294 Q78 300 84 296" fill="none" stroke="#B87A3F" stroke-width="4" stroke-linecap="round"/>
+    <ellipse cx="86" cy="360" rx="18" ry="16" fill="#D89A5E" stroke="#1B1A17" stroke-width="7"/>
+    <path d="M74 356 Q78 362 84 364" fill="none" stroke="#B87A3F" stroke-width="3.5" stroke-linecap="round"/>
+  </g>
+
+  <g id="hunk-arm-r" style="transform-box:view-box;transform-origin:186px 212px">
+    <circle cx="194" cy="206" r="19" fill="#D89A5E" stroke="#1B1A17" stroke-width="7"/>
+    <path d="M194 202 C212 198 228 208 234 228 C240 248 242 272 238 294 C236 312 236 326 234 336 C232 348 220 354 210 348 C201 343 198 334 200 322 C203 304 202 284 198 266 C194 248 188 230 186 214 Z"
+          fill="#D89A5E" stroke="#1B1A17" stroke-width="7" stroke-linejoin="round"/>
+    <path d="M222 238 C228 252 229 268 226 282" fill="none" stroke="#B87A3F" stroke-width="5" stroke-linecap="round"/>
+    <path d="M200 218 Q210 224 216 236" fill="none" stroke="#B87A3F" stroke-width="4" stroke-linecap="round"/>
+    <path d="M230 294 Q222 300 216 296" fill="none" stroke="#B87A3F" stroke-width="4" stroke-linecap="round"/>
+    <ellipse cx="214" cy="360" rx="18" ry="16" fill="#D89A5E" stroke="#1B1A17" stroke-width="7"/>
+    <path d="M226 356 Q222 362 216 364" fill="none" stroke="#B87A3F" stroke-width="3.5" stroke-linecap="round"/>
+  </g>
+
+  <!-- head -->
+  <g id="hunk-head" style="transform-box:view-box;transform-origin:150px 164px">
+    <ellipse cx="92" cy="106" rx="11" ry="15" fill="#D89A5E" stroke="#1B1A17" stroke-width="7"/>
+    <ellipse cx="208" cy="106" rx="11" ry="15" fill="#D89A5E" stroke="#1B1A17" stroke-width="7"/>
+    <path d="M96 102 Q96 108 100 111" fill="none" stroke="#B87A3F" stroke-width="3.5" stroke-linecap="round"/>
+    <path d="M204 102 Q204 108 200 111" fill="none" stroke="#B87A3F" stroke-width="3.5" stroke-linecap="round"/>
+
+    <path d="M90 92 C90 56 114 34 150 34 C186 34 210 56 210 92 C210 120 206 140 196 152 C186 164 170 170 150 170 C130 170 114 164 104 152 C94 140 90 120 90 92 Z"
+          fill="#D89A5E" stroke="#1B1A17" stroke-width="7" stroke-linejoin="round"/>
+
+    <!-- styled hair -->
+    <path d="M88 102 C88 60 110 34 150 34 C190 34 212 60 212 102 C206 92 202 82 200 72 C184 78 166 78 150 76 C132 74 114 76 100 72 C98 82 94 92 88 102 Z"
+          fill="#2B201B" stroke="#1B1A17" stroke-width="7" stroke-linejoin="round"/>
+    <path d="M102 74 C102 42 126 16 158 14 C188 12 210 30 216 58 C204 50 192 46 182 50 C194 38 194 26 188 20 C182 36 166 50 142 58 C126 64 112 70 102 74 Z"
+          fill="#2B201B" stroke="#1B1A17" stroke-width="7" stroke-linejoin="round"/>
+    <path d="M116 48 C128 30 146 20 164 18" fill="none" stroke="#4A382E" stroke-width="7" stroke-linecap="round"/>
+    <path d="M172 38 C182 34 192 38 199 46" fill="none" stroke="#4A382E" stroke-width="6" stroke-linecap="round"/>
+    <circle cx="207" cy="120" r="4" fill="#F2B233" stroke="#1B1A17" stroke-width="2.5"/>
+
+    <!-- eyes -->
+    <ellipse cx="122" cy="106" rx="16" ry="19" fill="#FFFDF6" stroke="#1B1A17" stroke-width="5"/>
+    <ellipse cx="178" cy="106" rx="16" ry="19" fill="#FFFDF6" stroke="#1B1A17" stroke-width="5"/>
+    <path d="M107 98 Q122 91 137 98" fill="none" stroke="#1B1A17" stroke-width="5" stroke-linecap="round"/>
+    <path d="M163 98 Q178 91 193 98" fill="none" stroke="#1B1A17" stroke-width="5" stroke-linecap="round"/>
+    <circle id="hunk-pupil-l" cx="124" cy="108" r="8" fill="#1B1A17"/>
+    <circle id="hunk-pupil-r" cx="176" cy="108" r="8" fill="#1B1A17"/>
+    <circle cx="118" cy="101" r="3.2" fill="#FFFDF6"/>
+    <circle cx="170" cy="101" r="3.2" fill="#FFFDF6"/>
+    <circle cx="128" cy="114" r="2" fill="#FFFDF6"/>
+    <circle cx="180" cy="114" r="2" fill="#FFFDF6"/>
+    <circle cx="168" cy="130" r="2.4" fill="#7A4A2A"/>
+
+    <!-- brows -->
+    <g id="hunk-brow-normal">
+      <path d="M100 92 Q118 86 136 90" fill="none" stroke="#1B1A17" stroke-width="8" stroke-linecap="round"/>
+      <path d="M164 86 Q182 80 200 88" fill="none" stroke="#1B1A17" stroke-width="8" stroke-linecap="round"/>
+    </g>
+    <g id="hunk-brow-shock" opacity="0">
+      <path d="M100 84 Q118 70 136 82" fill="none" stroke="#1B1A17" stroke-width="8" stroke-linecap="round"/>
+      <path d="M164 78 Q182 64 200 78" fill="none" stroke="#1B1A17" stroke-width="8" stroke-linecap="round"/>
+    </g>
+    <g id="hunk-brow-sad" opacity="0">
+      <path d="M100 94 Q118 96 136 82" fill="none" stroke="#1B1A17" stroke-width="8" stroke-linecap="round"/>
+      <path d="M164 82 Q182 96 200 94" fill="none" stroke="#1B1A17" stroke-width="8" stroke-linecap="round"/>
+    </g>
+
+    <!-- nose and cheek -->
+    <path d="M150 114 C146 126 144 136 150 140" fill="none" stroke="#1B1A17" stroke-width="6" stroke-linecap="round"/>
+    <path d="M144 142 Q150 146 156 143" fill="none" stroke="#B87A3F" stroke-width="4" stroke-linecap="round"/>
+    <path d="M110 128 Q118 136 128 134" fill="none" stroke="#B87A3F" stroke-width="4" stroke-linecap="round"/>
+    <path d="M190 128 Q182 136 172 134" fill="none" stroke="#B87A3F" stroke-width="4" stroke-linecap="round"/>
+
+    <!-- mouths -->
+    <g id="hunk-mouth-flat"><path d="M126 152 Q150 158 174 146" fill="none" stroke="#1B1A17" stroke-width="7" stroke-linecap="round"/></g>
+    <g id="hunk-mouth-smile" opacity="0">
+      <path d="M124 148 Q150 176 176 146" fill="none" stroke="#1B1A17" stroke-width="7" stroke-linecap="round"/>
+      <path d="M178 146 Q182 142 180 138" fill="none" stroke="#1B1A17" stroke-width="5" stroke-linecap="round"/>
+    </g>
+    <g id="hunk-mouth-shock" opacity="0"><ellipse cx="150" cy="154" rx="11" ry="13" fill="#7A3B2E" stroke="#1B1A17" stroke-width="5"/></g>
+    <g id="hunk-mouth-open" opacity="0">
+      <ellipse cx="150" cy="154" rx="19" ry="11" fill="#7A3B2E" stroke="#1B1A17" stroke-width="5"/>
+      <path d="M134 148 Q150 142 166 148 Q150 154 134 148 Z" fill="#FFFDF6"/>
+    </g>
+  </g>
+</svg>
+</div>
+    <div class="char s25-cast s25-runner s25-chaser" id="s25-h2"><svg viewBox="0 0 300 420" xmlns="http://www.w3.org/2000/svg">
+  <ellipse cx="150" cy="410" rx="82" ry="8" fill="#000" opacity=".16"/>
+
+  <!-- sparkle diamonds (hidden until animated) -->
+  <g id="hunk-sparkle" opacity="0">
+    <path d="M44 50 L46.8 57.2 L54 60 L46.8 62.8 L44 70 L41.2 62.8 L34 60 L41.2 57.2 Z" fill="#FFD24A" stroke="#1B1A17" stroke-width="3"/>
+    <path d="M256 54 L259.4 62.6 L268 66 L259.4 69.4 L256 78 L252.6 69.4 L244 66 L252.6 62.6 Z" fill="#FFD24A" stroke="#1B1A17" stroke-width="3"/>
+    <path d="M268 149 L270.5 155.5 L277 158 L270.5 160.5 L268 167 L265.5 160.5 L259 158 L265.5 155.5 Z" fill="#FFFDF6" stroke="#1B1A17" stroke-width="3"/>
+    <path d="M32 160 L34.2 165.8 L40 168 L34.2 170.2 L32 176 L29.8 170.2 L24 168 L29.8 165.8 Z" fill="#FFFDF6" stroke="#1B1A17" stroke-width="3"/>
+    <path d="M70 17 L72 22 L77 24 L72 26 L70 31 L68 26 L63 24 L68 22 Z" fill="#FFD24A" stroke="#1B1A17" stroke-width="3"/>
+    <path d="M228 12 L230.2 17.8 L236 20 L230.2 22.2 L228 28 L225.8 22.2 L220 20 L225.8 17.8 Z" fill="#FFD24A" stroke="#1B1A17" stroke-width="3"/>
+    <path d="M278 229 L280 234 L285 236 L280 238 L278 243 L276 238 L271 236 L276 234 Z" fill="#FFFDF6" stroke="#1B1A17" stroke-width="3"/>
+    <path d="M22 239 L24.5 245.5 L31 248 L24.5 250.5 L22 257 L19.5 250.5 L13 248 L19.5 245.5 Z" fill="#FFD24A" stroke="#1B1A17" stroke-width="3"/>
+  </g>
+
+  <!-- legs, hips and shoes -->
+  <g id="hunk-leg-l">
+    <rect x="109" y="326" width="34" height="66" rx="14" fill="#2E3B55" stroke="#1B1A17" stroke-width="7"/>
+    <rect x="103" y="387" width="46" height="19.5" rx="10" fill="#1B1A17" stroke="#1B1A17" stroke-width="7"/>
+  </g>
+  <g id="hunk-leg-r">
+    <rect x="157" y="326" width="34" height="66" rx="14" fill="#2E3B55" stroke="#1B1A17" stroke-width="7"/>
+    <rect x="151" y="387" width="46" height="19.5" rx="10" fill="#1B1A17" stroke="#1B1A17" stroke-width="7"/>
+  </g>
+  <rect x="104" y="330" width="92" height="44" rx="14" fill="#2E3B55" stroke="#1B1A17" stroke-width="7"/>
+
+  <!-- body -->
+  <g id="hunk-body">
+    <rect x="131" y="146" width="38" height="58" fill="#D89A5E" stroke="#1B1A17" stroke-width="7"/>
+    <path d="M92 198 C102 186 122 180 150 180 C178 180 198 186 208 198 C212 218 208 244 202 268 C197 296 195 322 192 340 C190 358 176 366 150 366 C124 366 110 358 108 340 C105 322 103 296 98 268 C92 244 88 218 92 198 Z"
+          fill="#D89A5E" stroke="#1B1A17" stroke-width="7" stroke-linejoin="round"/>
+    <path d="M124 206 Q138 214 148 210 M176 206 Q162 214 152 210" fill="none" stroke="#B87A3F" stroke-width="4" stroke-linecap="round"/>
+
+    <!-- tight white tank top -->
+    <path d="M102 194 C110 187 130 183 150 183 C170 183 190 187 198 194 C206 218 202 244 197 268 C192 296 190 326 188 342 C186 360 170 364 150 364 C130 364 114 360 112 342 C110 326 108 296 103 268 C98 244 94 218 102 194 Z"
+          fill="#FFFDF6" stroke="#1B1A17" stroke-width="7" stroke-linejoin="round"/>
+    <path d="M126 187 C131 207 140 218 150 218 C160 218 169 207 174 187 C166 183 158 181 150 181 C142 181 134 183 126 187 Z"
+          fill="#D89A5E" stroke="#1B1A17" stroke-width="7" stroke-linejoin="round"/>
+
+    <!-- fabric seams and muscle definition -->
+    <path d="M118 194 C112 212 110 232 110 252" fill="none" stroke="#D9CFBB" stroke-width="4" stroke-linecap="round"/>
+    <path d="M182 194 C188 212 190 232 190 252" fill="none" stroke="#D9CFBB" stroke-width="4" stroke-linecap="round"/>
+    <path d="M122 238 Q134 248 148 242 M178 238 Q166 248 152 242" fill="none" stroke="#D9CFBB" stroke-width="4" stroke-linecap="round"/>
+    <path d="M120 242 Q150 256 180 242" fill="none" stroke="#D9CFBB" stroke-width="5" stroke-linecap="round"/>
+    <path d="M150 218 L150 262" fill="none" stroke="#D9CFBB" stroke-width="4" stroke-linecap="round"/>
+    <path d="M150 266 L150 330" fill="none" stroke="#D9CFBB" stroke-width="4" stroke-linecap="round"/>
+    <path d="M136 292 Q150 300 164 292 M138 314 Q150 322 162 314" fill="none" stroke="#D9CFBB" stroke-width="4" stroke-linecap="round"/>
+    <path d="M124 276 Q118 300 124 322 M176 276 Q182 300 176 322" fill="none" stroke="#D9CFBB" stroke-width="4" stroke-linecap="round"/>
+    <path d="M112 338 Q150 352 188 338" fill="none" stroke="#E8DEC9" stroke-width="5" stroke-linecap="round"/>
+    <path d="M110 230 Q118 250 114 268" fill="none" stroke="#D9CFBB" stroke-width="4" stroke-linecap="round"/>
+    <path d="M190 230 Q182 250 186 268" fill="none" stroke="#D9CFBB" stroke-width="4" stroke-linecap="round"/>
+  </g>
+
+  <!-- arms (drawn over the torso so the shoulder joints stay visually attached) -->
+  <g id="hunk-arm-l" style="transform-box:view-box;transform-origin:114px 212px">
+    <circle cx="106" cy="206" r="19" fill="#D89A5E" stroke="#1B1A17" stroke-width="7"/>
+    <path d="M106 202 C88 198 72 208 66 228 C60 248 58 272 62 294 C64 312 64 326 66 336 C68 348 80 354 90 348 C99 343 102 334 100 322 C97 304 98 284 102 266 C106 248 112 230 114 214 Z"
+          fill="#D89A5E" stroke="#1B1A17" stroke-width="7" stroke-linejoin="round"/>
+    <path d="M78 238 C72 252 71 268 74 282" fill="none" stroke="#B87A3F" stroke-width="5" stroke-linecap="round"/>
+    <path d="M100 218 Q90 224 84 236" fill="none" stroke="#B87A3F" stroke-width="4" stroke-linecap="round"/>
+    <path d="M70 294 Q78 300 84 296" fill="none" stroke="#B87A3F" stroke-width="4" stroke-linecap="round"/>
+    <ellipse cx="86" cy="360" rx="18" ry="16" fill="#D89A5E" stroke="#1B1A17" stroke-width="7"/>
+    <path d="M74 356 Q78 362 84 364" fill="none" stroke="#B87A3F" stroke-width="3.5" stroke-linecap="round"/>
+  </g>
+
+  <g id="hunk-arm-r" style="transform-box:view-box;transform-origin:186px 212px">
+    <circle cx="194" cy="206" r="19" fill="#D89A5E" stroke="#1B1A17" stroke-width="7"/>
+    <path d="M194 202 C212 198 228 208 234 228 C240 248 242 272 238 294 C236 312 236 326 234 336 C232 348 220 354 210 348 C201 343 198 334 200 322 C203 304 202 284 198 266 C194 248 188 230 186 214 Z"
+          fill="#D89A5E" stroke="#1B1A17" stroke-width="7" stroke-linejoin="round"/>
+    <path d="M222 238 C228 252 229 268 226 282" fill="none" stroke="#B87A3F" stroke-width="5" stroke-linecap="round"/>
+    <path d="M200 218 Q210 224 216 236" fill="none" stroke="#B87A3F" stroke-width="4" stroke-linecap="round"/>
+    <path d="M230 294 Q222 300 216 296" fill="none" stroke="#B87A3F" stroke-width="4" stroke-linecap="round"/>
+    <ellipse cx="214" cy="360" rx="18" ry="16" fill="#D89A5E" stroke="#1B1A17" stroke-width="7"/>
+    <path d="M226 356 Q222 362 216 364" fill="none" stroke="#B87A3F" stroke-width="3.5" stroke-linecap="round"/>
+  </g>
+
+  <!-- head -->
+  <g id="hunk-head" style="transform-box:view-box;transform-origin:150px 164px">
+    <ellipse cx="92" cy="106" rx="11" ry="15" fill="#D89A5E" stroke="#1B1A17" stroke-width="7"/>
+    <ellipse cx="208" cy="106" rx="11" ry="15" fill="#D89A5E" stroke="#1B1A17" stroke-width="7"/>
+    <path d="M96 102 Q96 108 100 111" fill="none" stroke="#B87A3F" stroke-width="3.5" stroke-linecap="round"/>
+    <path d="M204 102 Q204 108 200 111" fill="none" stroke="#B87A3F" stroke-width="3.5" stroke-linecap="round"/>
+
+    <path d="M90 92 C90 56 114 34 150 34 C186 34 210 56 210 92 C210 120 206 140 196 152 C186 164 170 170 150 170 C130 170 114 164 104 152 C94 140 90 120 90 92 Z"
+          fill="#D89A5E" stroke="#1B1A17" stroke-width="7" stroke-linejoin="round"/>
+
+    <!-- styled hair -->
+    <path d="M88 102 C88 60 110 34 150 34 C190 34 212 60 212 102 C206 92 202 82 200 72 C184 78 166 78 150 76 C132 74 114 76 100 72 C98 82 94 92 88 102 Z"
+          fill="#2B201B" stroke="#1B1A17" stroke-width="7" stroke-linejoin="round"/>
+    <path d="M102 74 C102 42 126 16 158 14 C188 12 210 30 216 58 C204 50 192 46 182 50 C194 38 194 26 188 20 C182 36 166 50 142 58 C126 64 112 70 102 74 Z"
+          fill="#2B201B" stroke="#1B1A17" stroke-width="7" stroke-linejoin="round"/>
+    <path d="M116 48 C128 30 146 20 164 18" fill="none" stroke="#4A382E" stroke-width="7" stroke-linecap="round"/>
+    <path d="M172 38 C182 34 192 38 199 46" fill="none" stroke="#4A382E" stroke-width="6" stroke-linecap="round"/>
+    <circle cx="207" cy="120" r="4" fill="#F2B233" stroke="#1B1A17" stroke-width="2.5"/>
+
+    <!-- eyes -->
+    <ellipse cx="122" cy="106" rx="16" ry="19" fill="#FFFDF6" stroke="#1B1A17" stroke-width="5"/>
+    <ellipse cx="178" cy="106" rx="16" ry="19" fill="#FFFDF6" stroke="#1B1A17" stroke-width="5"/>
+    <path d="M107 98 Q122 91 137 98" fill="none" stroke="#1B1A17" stroke-width="5" stroke-linecap="round"/>
+    <path d="M163 98 Q178 91 193 98" fill="none" stroke="#1B1A17" stroke-width="5" stroke-linecap="round"/>
+    <circle id="hunk-pupil-l" cx="124" cy="108" r="8" fill="#1B1A17"/>
+    <circle id="hunk-pupil-r" cx="176" cy="108" r="8" fill="#1B1A17"/>
+    <circle cx="118" cy="101" r="3.2" fill="#FFFDF6"/>
+    <circle cx="170" cy="101" r="3.2" fill="#FFFDF6"/>
+    <circle cx="128" cy="114" r="2" fill="#FFFDF6"/>
+    <circle cx="180" cy="114" r="2" fill="#FFFDF6"/>
+    <circle cx="168" cy="130" r="2.4" fill="#7A4A2A"/>
+
+    <!-- brows -->
+    <g id="hunk-brow-normal">
+      <path d="M100 92 Q118 86 136 90" fill="none" stroke="#1B1A17" stroke-width="8" stroke-linecap="round"/>
+      <path d="M164 86 Q182 80 200 88" fill="none" stroke="#1B1A17" stroke-width="8" stroke-linecap="round"/>
+    </g>
+    <g id="hunk-brow-shock" opacity="0">
+      <path d="M100 84 Q118 70 136 82" fill="none" stroke="#1B1A17" stroke-width="8" stroke-linecap="round"/>
+      <path d="M164 78 Q182 64 200 78" fill="none" stroke="#1B1A17" stroke-width="8" stroke-linecap="round"/>
+    </g>
+    <g id="hunk-brow-sad" opacity="0">
+      <path d="M100 94 Q118 96 136 82" fill="none" stroke="#1B1A17" stroke-width="8" stroke-linecap="round"/>
+      <path d="M164 82 Q182 96 200 94" fill="none" stroke="#1B1A17" stroke-width="8" stroke-linecap="round"/>
+    </g>
+
+    <!-- nose and cheek -->
+    <path d="M150 114 C146 126 144 136 150 140" fill="none" stroke="#1B1A17" stroke-width="6" stroke-linecap="round"/>
+    <path d="M144 142 Q150 146 156 143" fill="none" stroke="#B87A3F" stroke-width="4" stroke-linecap="round"/>
+    <path d="M110 128 Q118 136 128 134" fill="none" stroke="#B87A3F" stroke-width="4" stroke-linecap="round"/>
+    <path d="M190 128 Q182 136 172 134" fill="none" stroke="#B87A3F" stroke-width="4" stroke-linecap="round"/>
+
+    <!-- mouths -->
+    <g id="hunk-mouth-flat"><path d="M126 152 Q150 158 174 146" fill="none" stroke="#1B1A17" stroke-width="7" stroke-linecap="round"/></g>
+    <g id="hunk-mouth-smile" opacity="0">
+      <path d="M124 148 Q150 176 176 146" fill="none" stroke="#1B1A17" stroke-width="7" stroke-linecap="round"/>
+      <path d="M178 146 Q182 142 180 138" fill="none" stroke="#1B1A17" stroke-width="5" stroke-linecap="round"/>
+    </g>
+    <g id="hunk-mouth-shock" opacity="0"><ellipse cx="150" cy="154" rx="11" ry="13" fill="#7A3B2E" stroke="#1B1A17" stroke-width="5"/></g>
+    <g id="hunk-mouth-open" opacity="0">
+      <ellipse cx="150" cy="154" rx="19" ry="11" fill="#7A3B2E" stroke="#1B1A17" stroke-width="5"/>
+      <path d="M134 148 Q150 142 166 148 Q150 154 134 148 Z" fill="#FFFDF6"/>
+    </g>
+  </g>
+</svg>
+</div>
+
+    <div class="s25-scooter" id="s25-scooter">
+      <span class="wheel a"></span>
+      <span class="wheel b"></span>
+      <span class="deck"></span>
+      <span class="body"></span>
+      <span class="column"></span>
+      <span class="bar"></span>
+      <span class="seat"></span>
+      <span class="lamp"></span>
+    </div>
+
+    <div class="s25-dust" style="left: 350px; top: 1428px"></div>
+    <div class="s25-dust" style="left: 500px; top: 1444px; width: 56px; height: 28px"></div>
+    <div class="s25-dust" style="left: 680px; top: 1450px; width: 62px; height: 30px"></div>
+  </div>
+</div>
+
+<script>
+  const tl = gsap.timeline({ paused: true });
+
+  // The whole parade pours in behind him.
+  tl.fromTo(
+    ".s25-cast",
+    { x: -420, opacity: 0 },
+    { x: 0, opacity: 1, duration: 0.6, stagger: 0.08, ease: "power2.out" },
+    0.1,
+  );
+
+  // They keep running.
+  tl.to(
+    ".s25-runner",
+    { x: 20, y: 10, duration: 0.24, yoyo: true, repeat: 10, stagger: 0.04, ease: "power1.inOut" },
+    1.0,
+  );
+
+  // The scooter wobbles forward at the back.
+  tl.fromTo(
+    "#s25-scooter",
+    { x: 0, rotate: -4, opacity: 0 },
+    { x: 70, rotate: 4, opacity: 1, duration: 1.5, ease: "power1.inOut" },
+    0.5,
+  );
+
+  window.__timelines["s25"] = tl;
+</script>
+
+</template>

@@ -77,7 +77,10 @@ export async function transpile(options: TranspileOptions): Promise<ScenePackage
         const tlDur = key && timelines ? timelines[key]!.duration() : 0;
         const rootEl = document.getElementById("root");
         const attr = Number.parseFloat(rootEl?.getAttribute("data-duration") ?? "0") || 0;
-        const base = Math.max(tlDur, attr, slotSec || 0);
+        // Fixed-slot films (e.g. 50 scenes x 3.6s) must stay on the grid even when a
+        // scene's timeline runs longer.
+        if (slotSec > 0) return slotSec;
+        const base = Math.max(tlDur, attr);
         return Math.min(120, base > 0 ? base : 3.6);
       }, options.slot ?? 0);
 
@@ -155,6 +158,9 @@ export async function transpile(options: TranspileOptions): Promise<ScenePackage
         const y = Math.max(0, raw.y - pad);
         const width = Math.min(1080 - x, raw.w + pad * 2);
         const height = Math.min(1920 - y, raw.h + pad * 2);
+        // elements fully outside the frame (or collapsed by a transform) have no
+        // visible pixels; skip them instead of asking Chrome for a 0px clip
+        if (width < 2 || height < 2) continue;
 
         const texPath = join(dir, `e${raw.i}.png`);
         await page.screenshot({

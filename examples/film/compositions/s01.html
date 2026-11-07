@@ -1,0 +1,716 @@
+<template>
+<style>
+@font-face {
+  font-family: "Kanit";
+  src: url("assets/fonts/Kanit-Medium.ttf") format("truetype");
+  font-weight: 500;
+}
+@font-face {
+  font-family: "Kanit";
+  src: url("assets/fonts/Kanit-Bold.ttf") format("truetype");
+  font-weight: 700;
+}
+@font-face {
+  font-family: "Kanit";
+  src: url("assets/fonts/Kanit-ExtraBold.ttf") format("truetype");
+  font-weight: 800;
+}
+@font-face {
+  font-family: "PlexThai";
+  src: url("assets/fonts/IBMPlexSansThaiLooped-Regular.ttf") format("truetype");
+  font-weight: 400;
+}
+@font-face {
+  font-family: "PlexThai";
+  src: url("assets/fonts/IBMPlexSansThaiLooped-Medium.ttf") format("truetype");
+  font-weight: 500;
+}
+
+* {
+  margin: 0;
+  padding: 0;
+  box-sizing: border-box;
+}
+
+#root {
+  position: absolute;
+  inset: 0;
+  overflow: hidden;
+  background: #f7ebd2;
+  font-family: "Kanit", sans-serif;
+  -webkit-font-smoothing: antialiased;
+}
+
+.stage {
+  position: absolute;
+  inset: 0;
+  transform-origin: 50% 48%;
+}
+
+.char {
+  position: absolute;
+  transform-origin: 50% 100%;
+  z-index: 8;
+}
+
+.char svg {
+  display: block;
+  width: 100%;
+  height: 100%;
+  overflow: visible;
+}
+
+.blink {
+  transform-origin: 50% 100%;
+}
+
+/* A phone notification that lives in the cartoon world. */
+.notif {
+  position: absolute;
+  width: 430px;
+  padding: 16px 18px;
+  display: flex;
+  gap: 14px;
+  align-items: center;
+  background: #fff8e8;
+  border: 4px solid #1b1a17;
+  border-radius: 18px;
+  box-shadow: 0 8px 0 rgba(27, 26, 23, 0.16);
+  z-index: 30;
+}
+
+.notif .ico {
+  width: 54px;
+  height: 54px;
+  border-radius: 14px;
+  background: #e5533d;
+  flex: none;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: #f7ebd2;
+  font: 800 26px/1 "Kanit", sans-serif;
+}
+
+.notif .copy {
+  font: 600 20px/1.25 "Kanit", sans-serif;
+  color: #1b1a17;
+}
+
+.notif .copy small {
+  display: block;
+  margin-top: 3px;
+  font: 500 16px/1.2 "PlexThai", sans-serif;
+  color: #6b5a48;
+}
+
+.paper {
+  background: #fff8e8;
+  border: 4px solid #1b1a17;
+  border-radius: 14px;
+  box-shadow: 0 8px 0 rgba(27, 26, 23, 0.14);
+}
+
+</style>
+<script>
+/* Minimal 2D "stage" helpers shared by every scene.
+ *
+ * Two problems this solves:
+ *   1. characters floating above / sinking under the floor
+ *      -> Stage.snap() puts the soles exactly on a named floor element
+ *   2. a camera push that reads as "the props are growing"
+ *      -> Stage.camera() moves background / world / foreground at different
+ *         rates around a single focus point, so it reads as depth, not scale
+ *
+ * Character SVG contract: viewBox 0 0 300 420, soles at y=410.
+ */
+
+(function () {
+  var SOLE = 410;
+  var VB_H = 420;
+
+  function soleOf(el) {
+    var r = el.getBoundingClientRect();
+    return r.top + r.height * (SOLE / VB_H);
+  }
+
+  /**
+   * Put every matched element's feet on the top edge of `floorSelector`.
+   * Elements must share an offsetParent with the floor (a lift cabin, a room).
+   */
+  function snap(selector, floorSelector, opts) {
+    var floor = document.querySelector(floorSelector);
+    if (!floor) return [];
+    var floorY = floor.getBoundingClientRect().top;
+    var els = document.querySelectorAll(selector);
+    var moved = [];
+    for (var i = 0; i < els.length; i++) {
+      var el = els[i];
+      var delta = floorY - soleOf(el) - (opts && opts.gap ? opts.gap : 0);
+      if (Math.abs(delta) < 0.5) {
+        moved.push(0);
+        continue;
+      }
+      el.style.top = (el.offsetTop + delta).toFixed(1) + "px";
+      moved.push(Number(delta.toFixed(1)));
+    }
+    return moved;
+  }
+
+  /**
+   * Parallax camera move. Layers tagged .cam-bg / .cam-world / .cam-fg
+   * scale by different amounts around the same focus point.
+   *
+   *   Stage.camera(tl, { zoom: 0.05, duration: 3.6, origin: "540px 1200px" });
+   */
+  function camera(tl, opts) {
+    opts = opts || {};
+    var zoom = opts.zoom == null ? 0.045 : opts.zoom;
+    var at = opts.at == null ? 0 : opts.at;
+    var dur = opts.duration == null ? 3.6 : opts.duration;
+    var ease = opts.ease || "none";
+    var origin = opts.origin || "540px 1200px";
+    var rates = opts.rates || { ".cam-bg": 0.45, ".cam-world": 1, ".cam-fg": 1.55 };
+    var applied = [];
+
+    Object.keys(rates).forEach(function (sel) {
+      var els = document.querySelectorAll(sel);
+      if (!els.length) return;
+      tl.fromTo(
+        els,
+        { scale: 1, transformOrigin: origin },
+        { scale: 1 + zoom * rates[sel], duration: dur, ease: ease },
+        at,
+      );
+      applied.push(sel);
+    });
+
+    return applied;
+  }
+
+  /**
+   * Real camera dolly using CSS 3D. Layers sit at different z; moving them all by the
+   * same amount makes near layers grow more than far ones — which is what a camera does,
+   * as opposed to `scale`, which grows everything equally and reads as "props inflating".
+   *
+   *   Stage.dolly(tl, { layers: [{ sel: "#s47-bg", z: -300 }, { sel: "#s47-stage", z: 0 }], move: 140 });
+   */
+  function dolly(tl, opts) {
+    opts = opts || {};
+    var rootEl = document.querySelector("#root");
+    if (!rootEl) return false;
+    var perspective = opts.perspective == null ? 1400 : opts.perspective;
+    rootEl.style.perspective = perspective + "px";
+    rootEl.style.perspectiveOrigin = opts.origin || "50% 62%";
+    rootEl.style.transformStyle = "preserve-3d";
+
+    var layers = opts.layers || [];
+    var move = opts.move == null ? 120 : opts.move;
+    var dur = opts.duration == null ? 3.6 : opts.duration;
+    var at = opts.at == null ? 0 : opts.at;
+    var applied = [];
+
+    layers.forEach(function (layer) {
+      var els = document.querySelectorAll(layer.sel);
+      if (!els.length) return;
+      var z0 = layer.z || 0;
+      // pre-scale so the layer still fills the frame at its resting depth
+      var comp = (perspective - z0) / perspective;
+      for (var i = 0; i < els.length; i++) {
+        els[i].style.transformStyle = "preserve-3d";
+        els[i].style.backfaceVisibility = "hidden";
+      }
+      tl.fromTo(els, { z: z0, scale: comp }, { z: z0 + move, duration: dur, ease: "none" }, at);
+      applied.push(layer.sel);
+    });
+
+    return applied;
+  }
+
+  /**
+   * Gravity-correct fall. Starts at rest, accelerates down, fades near the end.
+   * `y` is the drop distance in px; positive is down.
+   */
+  function fall(tl, target, opts) {
+    opts = opts || {};
+    var at = opts.at == null ? 0 : opts.at;
+    var dur = opts.duration == null ? 0.7 : opts.duration;
+    var drop = opts.drop == null ? 56 : opts.drop;
+    var stagger = opts.stagger || 0;
+    return tl.fromTo(
+      target,
+      { y: 0, opacity: 0 },
+      { y: drop, opacity: 1, duration: dur, ease: "power2.in", stagger: stagger },
+      at,
+    );
+  }
+
+  window.Stage = { snap: snap, camera: camera, dolly: dolly, fall: fall, soleOf: soleOf };
+})();
+
+</script>
+<style>
+  .bg { position: absolute; inset: 0; z-index: 1; }
+  .bg svg { display: block; width: 1080px; height: 1920px; }
+  .stage { position: absolute; inset: 0; z-index: 2; }
+  #s01-prot { left: 500px; top: 800px; width: 300px; height: 420px; z-index: 6; }
+  .s01-eyes {
+    position: absolute; inset: 0; width: 100%; height: 100%;
+    pointer-events: none;
+  }
+  .s01-blanket {
+    position: absolute; inset: 0; width: 1080px; height: 1920px;
+    z-index: 8; pointer-events: none;
+  }
+</style>
+
+<div id="root" data-composition-id="s01" data-width="1080" data-height="1920">
+  <div class="bg"><svg viewBox="0 0 1080 1920" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="Messy Thai bedroom in the morning">
+  <defs>
+    <clipPath id="bed-win">
+      <rect x="80" y="260" width="360" height="512"/>
+    </clipPath>
+    <clipPath id="bed-flag">
+      <path d="M502 392 q60 -14 118 0 l0 84 q-58 14 -118 0 z"/>
+    </clipPath>
+    <clipPath id="bed-posterA">
+      <rect x="642" y="214" width="252" height="332"/>
+    </clipPath>
+  </defs>
+
+  <!-- room shell -->
+  <rect x="0" y="0" width="1080" height="1920" fill="#F8E6C6"/>
+  <rect x="0" y="0" width="1080" height="1432" fill="#F8E6C6"/>
+  <rect x="0" y="0" width="1080" height="64" fill="#EDCFA2" stroke="#1B1A17" stroke-width="7"/>
+
+  <!-- floor -->
+  <rect x="0" y="1432" width="1080" height="488" fill="#C08A55"/>
+  <line x1="0" y1="1512" x2="1080" y2="1512" stroke="#A9713F" stroke-width="5"/>
+  <line x1="0" y1="1602" x2="1080" y2="1602" stroke="#A9713F" stroke-width="5"/>
+  <line x1="0" y1="1702" x2="1080" y2="1702" stroke="#A9713F" stroke-width="5"/>
+  <line x1="0" y1="1812" x2="1080" y2="1812" stroke="#A9713F" stroke-width="5"/>
+  <line x1="286" y1="1432" x2="286" y2="1512" stroke="#A9713F" stroke-width="5"/>
+  <line x1="742" y1="1432" x2="742" y2="1512" stroke="#A9713F" stroke-width="5"/>
+  <line x1="132" y1="1512" x2="132" y2="1602" stroke="#A9713F" stroke-width="5"/>
+  <line x1="534" y1="1512" x2="534" y2="1602" stroke="#A9713F" stroke-width="5"/>
+  <line x1="902" y1="1512" x2="902" y2="1602" stroke="#A9713F" stroke-width="5"/>
+  <line x1="322" y1="1602" x2="322" y2="1702" stroke="#A9713F" stroke-width="5"/>
+  <line x1="704" y1="1602" x2="704" y2="1702" stroke="#A9713F" stroke-width="5"/>
+  <line x1="152" y1="1702" x2="152" y2="1812" stroke="#A9713F" stroke-width="5"/>
+  <line x1="600" y1="1702" x2="600" y2="1812" stroke="#A9713F" stroke-width="5"/>
+  <line x1="968" y1="1702" x2="968" y2="1812" stroke="#A9713F" stroke-width="5"/>
+  <rect x="0" y="1398" width="1080" height="40" fill="#E9C79A" stroke="#1B1A17" stroke-width="7"/>
+
+  <!-- flat morning sunlight on the floor -->
+  <polygon points="430,1432 800,1432 930,1680 560,1680" fill="#F8D28C"/>
+
+  <!-- ============ WINDOW ============ -->
+  <g stroke="#1B1A17" stroke-width="8" stroke-linejoin="round">
+    <rect x="58" y="238" width="404" height="556" rx="6" fill="#9A5E33"/>
+    <rect x="80" y="260" width="360" height="512" fill="#A9DDF1"/>
+
+    <g clip-path="url(#bed-win)" stroke="none">
+      <!-- morning sky -->
+      <rect x="80" y="260" width="360" height="512" fill="#A9DDF1"/>
+      <circle cx="166" cy="348" r="44" fill="#F5B335"/>
+      <g fill="#FFFDF6">
+        <ellipse cx="286" cy="342" rx="58" ry="20"/>
+        <ellipse cx="330" cy="356" rx="40" ry="16"/>
+        <ellipse cx="236" cy="426" rx="44" ry="15"/>
+      </g>
+      <!-- flat Bangkok rooftops -->
+      <g stroke="#1B1A17" stroke-width="5">
+        <rect x="80" y="646" width="76" height="126" fill="#C99C6B"/>
+        <rect x="156" y="598" width="92" height="174" fill="#7FA650"/>
+        <rect x="248" y="662" width="64" height="110" fill="#A9673B"/>
+        <rect x="312" y="620" width="88" height="152" fill="#D96A4C"/>
+        <rect x="400" y="668" width="40" height="104" fill="#C99C6B"/>
+        <rect x="168" y="620" width="20" height="20" fill="#FFF3DA"/>
+        <rect x="204" y="620" width="20" height="20" fill="#FFF3DA"/>
+        <rect x="168" y="660" width="20" height="20" fill="#FFF3DA"/>
+        <rect x="330" y="644" width="18" height="18" fill="#FFF3DA"/>
+        <rect x="360" y="644" width="18" height="18" fill="#FFF3DA"/>
+        <rect x="330" y="684" width="18" height="18" fill="#FFF3DA"/>
+      </g>
+      <path d="M100 700 q18 -30 44 0 z" fill="#6E9E5E"/>
+    </g>
+
+    <!-- mullions -->
+    <rect x="254" y="260" width="13" height="512" fill="#9A5E33"/>
+    <rect x="80" y="512" width="360" height="13" fill="#9A5E33"/>
+    <rect x="38" y="786" width="444" height="34" rx="6" fill="#8B5228"/>
+  </g>
+
+  <!-- curtain rod + curtains -->
+  <line x1="24" y1="214" x2="492" y2="214" stroke="#1B1A17" stroke-width="10" stroke-linecap="round"/>
+  <circle cx="26" cy="214" r="12" fill="#F5B335" stroke="#1B1A17" stroke-width="6"/>
+  <circle cx="490" cy="214" r="12" fill="#F5B335" stroke="#1B1A17" stroke-width="6"/>
+  <path d="M40 226 q26 -6 52 0 q-8 150 4 262 q8 96 -10 154 l-58 0 z" fill="#E4543C" stroke="#1B1A17" stroke-width="7" stroke-linejoin="round"/>
+  <path d="M420 226 q22 -6 48 0 l8 416 l-62 0 q-10 -96 2 -180 q14 -120 4 -236 z" fill="#E4543C" stroke="#1B1A17" stroke-width="7" stroke-linejoin="round"/>
+  <path d="M62 300 q16 96 6 190" fill="none" stroke="#C7422E" stroke-width="6" stroke-linecap="round"/>
+  <path d="M438 300 q10 90 4 190" fill="none" stroke="#C7422E" stroke-width="6" stroke-linecap="round"/>
+
+  <!-- ============ BOY BAND POSTERS ============ -->
+  <!-- big sky-blue poster -->
+  <g transform="rotate(-2.5 768 380)">
+    <rect x="628" y="200" width="280" height="360" rx="8" fill="#FFF3DA" stroke="#1B1A17" stroke-width="8"/>
+    <rect x="642" y="214" width="252" height="332" fill="#79C7E3" stroke="#1B1A17" stroke-width="5"/>
+    <g clip-path="url(#bed-posterA)">
+      <rect x="642" y="500" width="252" height="46" fill="#F5B335"/>
+      <!-- member left -->
+      <g stroke="#1B1A17" stroke-linejoin="round">
+        <path d="M 662 522 L 662 440 Q 662 406 698 400 Q 734 406 734 440 L 734 522 Z" fill="#E4543C" stroke-width="6"/>
+        <rect x="690" y="368" width="18" height="36" fill="#EFC29B" stroke-width="5"/>
+        <circle cx="699" cy="346" r="25" fill="#EFC29B" stroke-width="6"/>
+        <path d="M 674 344 Q 672 312 700 310 Q 728 312 726 344 Q 718 326 700 328 Q 682 326 674 344 Z" fill="#2A2320" stroke-width="6"/>
+        <circle cx="690" cy="348" r="3" fill="#1B1A17" stroke="none"/>
+        <circle cx="708" cy="348" r="3" fill="#1B1A17" stroke="none"/>
+        <path d="M 692 360 Q 699 366 706 360" fill="none" stroke-width="4" stroke-linecap="round"/>
+        <path d="M 684 338 l 10 -3" fill="none" stroke-width="3.5" stroke-linecap="round"/>
+        <path d="M 704 335 l 10 3" fill="none" stroke-width="3.5" stroke-linecap="round"/>
+      </g>
+      <!-- member centre -->
+      <g stroke="#1B1A17" stroke-linejoin="round">
+        <path d="M 724 526 L 724 436 Q 724 400 766 394 Q 808 400 808 436 L 808 526 Z" fill="#FFF3DA" stroke-width="6"/>
+        <path d="M 724 460 L 808 460 L 808 486 L 724 486 Z" fill="#F5B335" stroke-width="4"/>
+        <rect x="756" y="360" width="20" height="38" fill="#EFC29B" stroke-width="5"/>
+        <circle cx="766" cy="336" r="27" fill="#EFC29B" stroke-width="6"/>
+        <path d="M 739 334 Q 736 300 766 298 Q 796 300 793 334 L 784 322 L 774 336 L 762 320 L 750 338 Z" fill="#2A2320" stroke-width="6"/>
+        <circle cx="756" cy="338" r="3" fill="#1B1A17" stroke="none"/>
+        <circle cx="776" cy="338" r="3" fill="#1B1A17" stroke="none"/>
+        <path d="M 758 352 Q 766 359 774 352" fill="none" stroke-width="4" stroke-linecap="round"/>
+        <path d="M 748 326 l 12 -4" fill="none" stroke-width="3.5" stroke-linecap="round"/>
+        <path d="M 772 322 l 12 4" fill="none" stroke-width="3.5" stroke-linecap="round"/>
+      </g>
+      <!-- member right -->
+      <g stroke="#1B1A17" stroke-linejoin="round">
+        <path d="M 800 524 L 800 448 Q 800 414 834 408 Q 868 414 868 448 L 868 524 Z" fill="#7FA650" stroke-width="6"/>
+        <rect x="826" y="378" width="17" height="34" fill="#EFC29B" stroke-width="5"/>
+        <circle cx="835" cy="356" r="24" fill="#EFC29B" stroke-width="6"/>
+        <path d="M 812 354 Q 810 326 836 324 Q 862 326 860 354 Q 848 340 836 340 Q 822 340 812 354 Z" fill="#4A3428" stroke-width="6"/>
+        <circle cx="827" cy="358" r="3" fill="#1B1A17" stroke="none"/>
+        <circle cx="843" cy="358" r="3" fill="#1B1A17" stroke="none"/>
+        <path d="M 829 369 Q 835 374 841 369" fill="none" stroke-width="4" stroke-linecap="round"/>
+        <path d="M 818 530 Q 835 510 852 530" fill="none" stroke-width="5" stroke-linecap="round"/>
+      </g>
+      <!-- fan extras -->
+      <circle cx="878" cy="238" r="17" fill="#F5B335" stroke="#1B1A17" stroke-width="5"/>
+      <path d="M 878 226 l 4 9 10 1 -7 7 2 10 -9 -5 -9 5 2 -10 -7 -7 10 -1 Z" fill="#FFF3DA" stroke="none"/>
+    </g>
+  </g>
+
+  <!-- mango poster -->
+  <g transform="rotate(5 962 300)">
+    <rect x="884" y="180" width="166" height="250" rx="6" fill="#FFF3DA" stroke="#1B1A17" stroke-width="8"/>
+    <rect x="896" y="192" width="142" height="226" fill="#F5B335" stroke="#1B1A17" stroke-width="5"/>
+    <g stroke="#1B1A17" stroke-linejoin="round">
+      <path d="M 910 418 L 910 348 Q 910 322 936 318 Q 962 322 962 348 L 962 418 Z" fill="#2F8FA6" stroke-width="6"/>
+      <circle cx="936" cy="298" r="22" fill="#EFC29B" stroke-width="6"/>
+      <path d="M 915 298 Q 914 272 936 270 Q 958 272 957 298 Q 948 284 936 286 Q 924 284 915 298 Z" fill="#2A2320" stroke-width="6"/>
+      <circle cx="929" cy="300" r="2.6" fill="#1B1A17" stroke="none"/>
+      <circle cx="943" cy="300" r="2.6" fill="#1B1A17" stroke="none"/>
+      <path d="M 930 309 Q 936 314 942 309" fill="none" stroke-width="3.5" stroke-linecap="round"/>
+      <path d="M 974 416 L 974 356 Q 974 332 998 328 Q 1022 332 1022 356 L 1022 416 Z" fill="#E4543C" stroke-width="6"/>
+      <circle cx="998" cy="310" r="20" fill="#EFC29B" stroke-width="6"/>
+      <path d="M 978 310 Q 978 286 998 284 Q 1018 286 1018 310 Q 1010 296 998 298 Q 986 296 978 310 Z" fill="#4A3428" stroke-width="6"/>
+      <circle cx="992" cy="312" r="2.6" fill="#1B1A17" stroke="none"/>
+      <circle cx="1004" cy="312" r="2.6" fill="#1B1A17" stroke="none"/>
+      <path d="M 992 320 Q 998 325 1004 320" fill="none" stroke-width="3.5" stroke-linecap="round"/>
+    </g>
+    <path d="M 912 220 q8 -14 20 0 q-8 14 -20 0 z" fill="#E4543C" stroke="#1B1A17" stroke-width="4"/>
+    <path d="M 958 238 q7 -12 17 0 q-7 12 -17 0 z" fill="#FFF3DA" stroke="#1B1A17" stroke-width="4"/>
+  </g>
+
+  <!-- chili-red portrait poster -->
+  <g transform="rotate(-6 955 530)">
+    <rect x="880" y="430" width="150" height="200" rx="6" fill="#FFF3DA" stroke="#1B1A17" stroke-width="8"/>
+    <rect x="891" y="441" width="128" height="178" fill="#E4543C" stroke="#1B1A17" stroke-width="5"/>
+    <g stroke="#1B1A17" stroke-linejoin="round">
+      <path d="M 916 616 Q 916 548 955 544 Q 994 548 994 616 Z" fill="#79C7E3" stroke-width="6"/>
+      <circle cx="955" cy="524" r="32" fill="#EFC29B" stroke-width="6"/>
+      <path d="M 925 522 Q 922 484 955 482 Q 988 484 985 522 Q 974 500 955 502 Q 936 500 925 522 Z" fill="#2A2320" stroke-width="6"/>
+      <circle cx="944" cy="526" r="3" fill="#1B1A17" stroke="none"/>
+      <circle cx="966" cy="526" r="3" fill="#1B1A17" stroke="none"/>
+      <path d="M 946 540 Q 955 547 964 540" fill="none" stroke-width="4" stroke-linecap="round"/>
+    </g>
+    <path d="M 998 466 q9 -16 23 0 q-9 16 -23 0 z" fill="#F5B335" stroke="#1B1A17" stroke-width="4"/>
+    <path d="M 1004 582 l 5 11 12 1 -9 8 3 12 -11 -6 -11 6 3 -12 -9 -8 12 -1 Z" fill="#FFF3DA" stroke="#1B1A17" stroke-width="4"/>
+  </g>
+
+  <!-- small rainbow flag -->
+  <line x1="502" y1="380" x2="502" y2="572" stroke="#1B1A17" stroke-width="9" stroke-linecap="round"/>
+  <circle cx="502" cy="376" r="10" fill="#F5B335" stroke="#1B1A17" stroke-width="5"/>
+  <g clip-path="url(#bed-flag)" stroke="none">
+    <rect x="500" y="392" width="122" height="14" fill="#D9453A"/>
+    <rect x="500" y="406" width="122" height="14" fill="#F08A3C"/>
+    <rect x="500" y="420" width="122" height="14" fill="#F5C93F"/>
+    <rect x="500" y="434" width="122" height="14" fill="#7FA650"/>
+    <rect x="500" y="448" width="122" height="14" fill="#79C7E3"/>
+    <rect x="500" y="462" width="122" height="14" fill="#8A6BB0"/>
+  </g>
+  <path d="M502 392 q60 -14 118 0 l0 84 q-58 14 -118 0 z" fill="none" stroke="#1B1A17" stroke-width="6" stroke-linejoin="round"/>
+
+  <!-- ============ BED ============ -->
+  <ellipse cx="750" cy="1416" rx="320" ry="26" fill="#A9713F"/>
+  <!-- headboard -->
+  <rect x="470" y="840" width="580" height="300" rx="22" fill="#8B5228" stroke="#1B1A17" stroke-width="8"/>
+  <rect x="492" y="862" width="536" height="256" rx="16" fill="#A9673B" stroke="#1B1A17" stroke-width="6"/>
+  <line x1="676" y1="874" x2="676" y2="1106" stroke="#8B5228" stroke-width="6"/>
+  <line x1="844" y1="874" x2="844" y2="1106" stroke="#8B5228" stroke-width="6"/>
+  <!-- base + legs -->
+  <rect x="452" y="1152" width="608" height="210" rx="12" fill="#9A5E33" stroke="#1B1A17" stroke-width="8"/>
+  <rect x="476" y="1362" width="26" height="60" fill="#7A4523" stroke="#1B1A17" stroke-width="6"/>
+  <rect x="648" y="1362" width="26" height="60" fill="#7A4523" stroke="#1B1A17" stroke-width="6"/>
+  <rect x="836" y="1362" width="26" height="60" fill="#7A4523" stroke="#1B1A17" stroke-width="6"/>
+  <rect x="1008" y="1362" width="26" height="60" fill="#7A4523" stroke="#1B1A17" stroke-width="6"/>
+  <line x1="470" y1="1210" x2="1042" y2="1210" stroke="#8B5228" stroke-width="5"/>
+
+  <!-- mattress + sheet -->
+  <rect x="438" y="1016" width="636" height="164" rx="26" fill="#FFF3DA" stroke="#1B1A17" stroke-width="8"/>
+  <path d="M 470 1052 Q 640 1034 760 1050 T 1046 1046" fill="none" stroke="#E4CDA6" stroke-width="6" stroke-linecap="round"/>
+
+  <!-- pillows -->
+  <g transform="rotate(-7 566 1066)">
+    <rect x="472" y="1018" width="192" height="98" rx="26" fill="#FFFDF6" stroke="#1B1A17" stroke-width="8"/>
+    <path d="M 500 1066 q40 -20 80 0" fill="none" stroke="#E4CDA6" stroke-width="5" stroke-linecap="round"/>
+  </g>
+  <g transform="rotate(4 716 1056)">
+    <rect x="644" y="1004" width="158" height="94" rx="24" fill="#F5B335" stroke="#1B1A17" stroke-width="8"/>
+    <line x1="668" y1="1026" x2="806" y2="1026" stroke="#D99322" stroke-width="6"/>
+  </g>
+
+  <!-- crumpled blanket -->
+  <path d="M 444 1088
+           C 512 1058 566 1114 630 1084
+           C 700 1050 756 1110 822 1084
+           C 888 1058 946 1108 1008 1082
+           C 1036 1070 1056 1080 1062 1092
+           L 1058 1206
+           C 1014 1238 962 1200 908 1226
+           C 850 1254 800 1204 740 1234
+           C 682 1264 626 1216 566 1244
+           C 510 1272 470 1226 438 1242
+           Z"
+        fill="#E4543C" stroke="#1B1A17" stroke-width="8" stroke-linejoin="round"/>
+  <path d="M 512 1122 C 566 1100 604 1140 654 1124" fill="none" stroke="#C7422E" stroke-width="7" stroke-linecap="round"/>
+  <path d="M 700 1158 C 762 1134 806 1172 868 1148" fill="none" stroke="#C7422E" stroke-width="7" stroke-linecap="round"/>
+  <path d="M 526 1190 C 566 1174 598 1204 642 1188" fill="none" stroke="#C7422E" stroke-width="6" stroke-linecap="round"/>
+  <path d="M 892 1188 C 926 1172 962 1196 1000 1180" fill="none" stroke="#C7422E" stroke-width="6" stroke-linecap="round"/>
+  <path d="M 468 1226 L 468 1290 Q 520 1306 568 1290 L 568 1248" fill="#E4543C" stroke="#1B1A17" stroke-width="8" stroke-linejoin="round"/>
+  <path d="M 1016 1214 L 1016 1276 Q 980 1292 942 1276 L 942 1234" fill="#E4543C" stroke="#1B1A17" stroke-width="8" stroke-linejoin="round"/>
+  <!-- turned-over blanket edge -->
+  <path d="M 470 1096 C 540 1070 590 1118 652 1092" fill="none" stroke="#FFF3DA" stroke-width="10" stroke-linecap="round"/>
+
+  <!-- sleeping cat on the blanket -->
+  <g transform="translate(922 1170) rotate(-7)">
+    <path d="M -66 16 C -104 22 -116 52 -86 62" fill="none" stroke="#1B1A17" stroke-width="8" stroke-linecap="round"/>
+    <path d="M -66 16 C -104 22 -116 52 -86 62" fill="none" stroke="#F2A65A" stroke-width="16" stroke-linecap="round"/>
+    <ellipse cx="0" cy="0" rx="70" ry="42" fill="#F2A65A" stroke="#1B1A17" stroke-width="7"/>
+    <path d="M -34 -34 q4 30 0 44" fill="none" stroke="#C97C34" stroke-width="7" stroke-linecap="round"/>
+    <path d="M -12 -38 q4 34 0 52" fill="none" stroke="#C97C34" stroke-width="7" stroke-linecap="round"/>
+    <path d="M 12 -34 q4 30 0 44" fill="none" stroke="#C97C34" stroke-width="7" stroke-linecap="round"/>
+    <path d="M 40 -40 l 8 -24 l 23 14 z" fill="#F2A65A" stroke="#1B1A17" stroke-width="6" stroke-linejoin="round"/>
+    <path d="M 74 -38 l 12 -20 l 17 18 z" fill="#F2A65A" stroke="#1B1A17" stroke-width="6" stroke-linejoin="round"/>
+    <circle cx="62" cy="-20" r="28" fill="#F2A65A" stroke="#1B1A17" stroke-width="7"/>
+    <path d="M 45 -38 q6 8 12 0" fill="none" stroke="#1B1A17" stroke-width="4" stroke-linecap="round"/>
+    <path d="M 62 -38 q6 8 12 0" fill="none" stroke="#1B1A17" stroke-width="4" stroke-linecap="round"/>
+    <path d="M 46 -22 q6 6 12 0" fill="none" stroke="#1B1A17" stroke-width="4" stroke-linecap="round"/>
+    <path d="M 70 -22 q6 6 12 0" fill="none" stroke="#1B1A17" stroke-width="4" stroke-linecap="round"/>
+    <path d="M 62 -14 l 6 5 l -6 4" fill="#E4543C" stroke="#1B1A17" stroke-width="3" stroke-linejoin="round"/>
+    <path d="M 34 -16 l -20 -6 M 34 -10 l -22 2" fill="none" stroke="#1B1A17" stroke-width="2.5" stroke-linecap="round"/>
+    <path d="M 88 -16 l 18 -6 M 88 -10 l 20 2" fill="none" stroke="#1B1A17" stroke-width="2.5" stroke-linecap="round"/>
+    <ellipse cx="18" cy="38" rx="17" ry="10" fill="#F2A65A" stroke="#1B1A17" stroke-width="5"/>
+    <ellipse cx="-22" cy="38" rx="17" ry="10" fill="#F2A65A" stroke="#1B1A17" stroke-width="5"/>
+  </g>
+
+  <!-- ============ NIGHTSTAND + PHONE ============ -->
+  <ellipse cx="330" cy="1418" rx="110" ry="15" fill="#A9713F"/>
+  <rect x="236" y="1148" width="196" height="224" rx="8" fill="#A9673B" stroke="#1B1A17" stroke-width="8"/>
+  <rect x="228" y="1134" width="212" height="28" rx="6" fill="#8B5228" stroke="#1B1A17" stroke-width="7"/>
+  <rect x="252" y="1180" width="164" height="64" rx="5" fill="#B3763F" stroke="#1B1A17" stroke-width="6"/>
+  <circle cx="334" cy="1212" r="9" fill="#F5B335" stroke="#1B1A17" stroke-width="5"/>
+  <rect x="252" y="1258" width="164" height="88" fill="#7A4523" stroke="#1B1A17" stroke-width="6"/>
+  <rect x="262" y="1268" width="144" height="24" rx="4" fill="#E4543C" stroke="#1B1A17" stroke-width="5"/>
+  <rect x="268" y="1300" width="60" height="36" rx="4" fill="#79C7E3" stroke="#1B1A17" stroke-width="5"/>
+  <circle cx="364" cy="1322" r="14" fill="#F5B335" stroke="#1B1A17" stroke-width="5"/>
+  <rect x="246" y="1372" width="20" height="50" fill="#7A4523" stroke="#1B1A17" stroke-width="6"/>
+  <rect x="402" y="1372" width="20" height="50" fill="#7A4523" stroke="#1B1A17" stroke-width="6"/>
+
+  <!-- wall socket + charging cable -->
+  <rect x="262" y="978" width="50" height="70" rx="8" fill="#FFF3DA" stroke="#1B1A17" stroke-width="6"/>
+  <circle cx="279" cy="1000" r="4" fill="#1B1A17"/>
+  <circle cx="295" cy="1000" r="4" fill="#1B1A17"/>
+  <line x1="279" y1="1024" x2="279" y2="1034" stroke="#1B1A17" stroke-width="5" stroke-linecap="round"/>
+  <line x1="295" y1="1024" x2="295" y2="1034" stroke="#1B1A17" stroke-width="5" stroke-linecap="round"/>
+  <path d="M 288 1048 C 286 1072 292 1088 300 1102" fill="none" stroke="#1B1A17" stroke-width="6" stroke-linecap="round"/>
+
+  <!-- phone face-down / charging -->
+  <g transform="rotate(-9 292 1114)">
+    <rect x="252" y="1096" width="82" height="38" rx="9" fill="#2F8FA6" stroke="#1B1A17" stroke-width="7"/>
+    <rect x="262" y="1104" width="62" height="22" rx="4" fill="#A9DDF1" stroke="#1B1A17" stroke-width="4"/>
+    <circle cx="258" cy="1115" r="3" fill="#1B1A17"/>
+  </g>
+
+  <!-- lamp -->
+  <ellipse cx="386" cy="1132" rx="38" ry="12" fill="#8B5228" stroke="#1B1A17" stroke-width="6"/>
+  <line x1="386" y1="1124" x2="386" y2="1080" stroke="#1B1A17" stroke-width="8"/>
+  <path d="M 334 1082 L 438 1082 L 420 1004 L 352 1004 Z" fill="#F5B335" stroke="#1B1A17" stroke-width="8" stroke-linejoin="round"/>
+  <path d="M 348 1022 L 424 1022" fill="none" stroke="#D99322" stroke-width="6"/>
+  <line x1="410" y1="1082" x2="416" y2="1118" stroke="#1B1A17" stroke-width="5" stroke-linecap="round"/>
+
+  <!-- ============ CHAIR WITH CLOTHES ============ -->
+  <ellipse cx="148" cy="1440" rx="106" ry="14" fill="#A9713F"/>
+  <g stroke="#1B1A17" stroke-linejoin="round">
+    <rect x="66" y="1118" width="16" height="186" fill="#8B5228" stroke-width="7"/>
+    <rect x="204" y="1118" width="16" height="186" fill="#8B5228" stroke-width="7"/>
+    <rect x="80" y="1160" width="126" height="14" fill="#A9673B" stroke-width="6"/>
+    <rect x="80" y="1198" width="126" height="14" fill="#A9673B" stroke-width="6"/>
+    <rect x="80" y="1236" width="126" height="14" fill="#A9673B" stroke-width="6"/>
+    <rect x="54" y="1288" width="184" height="32" rx="6" fill="#A9673B" stroke-width="8"/>
+    <rect x="64" y="1320" width="16" height="122" fill="#8B5228" stroke-width="7"/>
+    <rect x="212" y="1320" width="16" height="122" fill="#8B5228" stroke-width="7"/>
+    <rect x="78" y="1320" width="12" height="110" fill="#8B5228" stroke-width="6"/>
+    <rect x="202" y="1320" width="12" height="110" fill="#8B5228" stroke-width="6"/>
+  </g>
+  <!-- sky-blue shirt over chair back -->
+  <path d="M 84 1130 L 202 1124 L 214 1258 L 178 1266 L 168 1194 L 116 1198 L 110 1270 L 70 1262 Z"
+        fill="#79C7E3" stroke="#1B1A17" stroke-width="7" stroke-linejoin="round"/>
+  <path d="M 84 1130 L 52 1230 L 84 1246 L 106 1160 Z" fill="#79C7E3" stroke="#1B1A17" stroke-width="7" stroke-linejoin="round"/>
+  <path d="M 202 1124 L 224 1226 L 192 1240 L 180 1158 Z" fill="#79C7E3" stroke="#1B1A17" stroke-width="7" stroke-linejoin="round"/>
+  <path d="M 126 1128 L 144 1140 L 162 1128" fill="#FFF3DA" stroke="#1B1A17" stroke-width="5" stroke-linejoin="round"/>
+  <line x1="96" y1="1176" x2="192" y2="1170" stroke="#5BA9C6" stroke-width="5"/>
+  <!-- jeans on the seat -->
+  <path d="M 112 1268 q34 -22 76 4 l 24 46 q-30 22 -68 8 l -10 -22 l -22 14 q-24 -18 -6 -34 z"
+        fill="#5E7FA3" stroke="#1B1A17" stroke-width="7" stroke-linejoin="round"/>
+  <path d="M 140 1294 q18 16 46 8" fill="none" stroke="#456179" stroke-width="5"/>
+  <!-- sock -->
+  <path d="M 186 1282 q16 6 14 22 q-2 16 -20 14 q-14 -2 -10 -20 z" fill="#F5B335" stroke="#1B1A17" stroke-width="6"/>
+
+  <!-- ============ RUG + SLIPPERS ============ -->
+  <ellipse cx="600" cy="1652" rx="358" ry="150" fill="#EBCB9E" stroke="#1B1A17" stroke-width="7"/>
+  <ellipse cx="600" cy="1652" rx="322" ry="122" fill="none" stroke="#D3A96C" stroke-width="5"/>
+  <g stroke="#1B1A17" stroke-width="6" stroke-linejoin="round">
+    <path d="M 470 1490 q34 -18 62 0 l4 26 q-36 14 -70 0 z" fill="#E4543C"/>
+    <path d="M 540 1474 q34 -16 60 2 l2 24 q-34 14 -66 0 z" fill="#E4543C"/>
+    <path d="M 484 1504 q18 -8 34 0" fill="none" stroke="#C7422E" stroke-width="4"/>
+    <path d="M 554 1488 q16 -8 30 0" fill="none" stroke="#C7422E" stroke-width="4"/>
+  </g>
+
+</svg></div>
+  <div class="stage">
+    <div class="char" id="s01-prot">﻿<svg viewBox="0 0 300 420" xmlns="http://www.w3.org/2000/svg">
+  <ellipse cx="150" cy="410" rx="78" ry="8" fill="#000" opacity=".16"/>
+  <g id="prot-leg-l">
+    <rect x="110" y="326" width="32" height="66" rx="14" fill="#2E3B55" stroke="#1B1A17" stroke-width="7"/>
+    <rect x="103" y="387" width="46" height="19.5" rx="10" fill="#1B1A17" stroke="#1B1A17" stroke-width="7"/>
+  </g>
+  <g id="prot-leg-r">
+    <rect x="158" y="326" width="32" height="66" rx="14" fill="#2E3B55" stroke="#1B1A17" stroke-width="7"/>
+    <rect x="151" y="387" width="46" height="19.5" rx="10" fill="#1B1A17" stroke="#1B1A17" stroke-width="7"/>
+  </g>
+  <rect x="86" y="230" width="128" height="142" rx="38" fill="#F2B233" stroke="#1B1A17" stroke-width="7"/>
+  <path d="M118 250 L150 300 L182 250" fill="none" stroke="#D99322" stroke-width="6" stroke-linecap="round"/>
+  <g id="prot-arm-l" style="transform-origin:100px 250px">
+    <circle cx="84" cy="250" r="26" fill="#F2B233" stroke="#1B1A17" stroke-width="7"/>
+    <rect x="52" y="240" width="42" height="124" rx="21" fill="#F2B233" stroke="#1B1A17" stroke-width="7"/>
+    <circle cx="73" cy="366" r="21" fill="#F2C9A0" stroke="#1B1A17" stroke-width="7"/>
+  </g>
+  <g id="prot-arm-r" style="transform-origin:200px 250px">
+    <circle cx="216" cy="250" r="26" fill="#F2B233" stroke="#1B1A17" stroke-width="7"/>
+    <rect x="206" y="240" width="42" height="124" rx="21" fill="#F2B233" stroke="#1B1A17" stroke-width="7"/>
+    <circle cx="227" cy="366" r="21" fill="#F2C9A0" stroke="#1B1A17" stroke-width="7"/>
+  </g>
+  <rect x="130" y="204" width="40" height="46" fill="#F2C9A0" stroke="#1B1A17" stroke-width="7"/>
+  <circle cx="64" cy="138" r="17" fill="#F2C9A0" stroke="#1B1A17" stroke-width="7"/>
+  <circle cx="236" cy="138" r="17" fill="#F2C9A0" stroke="#1B1A17" stroke-width="7"/>
+  <ellipse cx="150" cy="128" rx="84" ry="92" fill="#F2C9A0" stroke="#1B1A17" stroke-width="7"/>
+  <path d="M62 140 C58 58, 112 28, 150 28 C188 28, 242 58, 238 140 C220 96, 190 84, 150 84 C110 84, 80 96, 62 140 Z" fill="#1B1A17"/>
+  <path d="M62 132 C78 112, 92 104, 112 100" fill="none" stroke="#3A2E28" stroke-width="10" stroke-linecap="round"/>
+  <ellipse cx="116" cy="132" rx="17" ry="21" fill="#FFFDF6" stroke="#1B1A17" stroke-width="5"/>
+  <ellipse cx="184" cy="132" rx="17" ry="21" fill="#FFFDF6" stroke="#1B1A17" stroke-width="5"/>
+  <circle id="prot-pupil-l" cx="119" cy="134" r="7" fill="#1B1A17"/>
+  <circle id="prot-pupil-r" cx="187" cy="134" r="7" fill="#1B1A17"/>
+  <rect id="prot-lid-l" x="99" y="111" width="34" height="24" rx="6" fill="#F2C9A0" stroke="#1B1A17" stroke-width="4"/>
+  <rect id="prot-lid-r" x="167" y="111" width="34" height="24" rx="6" fill="#F2C9A0" stroke="#1B1A17" stroke-width="4"/>
+  <g id="prot-brow-normal">
+    <path d="M100 104 Q116 94 132 102" fill="none" stroke="#1B1A17" stroke-width="8" stroke-linecap="round"/>
+    <path d="M168 102 Q184 94 200 104" fill="none" stroke="#1B1A17" stroke-width="8" stroke-linecap="round"/>
+  </g>
+  <g id="prot-brow-shock" opacity="0">
+    <path d="M100 92 Q116 80 132 90" fill="none" stroke="#1B1A17" stroke-width="8" stroke-linecap="round"/>
+    <path d="M168 90 Q184 80 200 92" fill="none" stroke="#1B1A17" stroke-width="8" stroke-linecap="round"/>
+  </g>
+  <g id="prot-brow-sad" opacity="0">
+    <path d="M100 106 Q116 112 132 100" fill="none" stroke="#1B1A17" stroke-width="8" stroke-linecap="round"/>
+    <path d="M168 100 Q184 112 200 106" fill="none" stroke="#1B1A17" stroke-width="8" stroke-linecap="round"/>
+  </g>
+  <path d="M150 150 Q144 168 154 172" fill="none" stroke="#1B1A17" stroke-width="6" stroke-linecap="round"/>
+  <g id="prot-mouth-flat"><path d="M126 186 Q150 192 174 186" fill="none" stroke="#1B1A17" stroke-width="7" stroke-linecap="round"/></g>
+  <g id="prot-mouth-smile" opacity="0"><path d="M120 180 Q150 210 180 180" fill="none" stroke="#1B1A17" stroke-width="7" stroke-linecap="round"/></g>
+  <g id="prot-mouth-shock" opacity="0"><ellipse cx="150" cy="190" rx="18" ry="24" fill="#7A3B2E" stroke="#1B1A17" stroke-width="5"/></g>
+  <g id="prot-mouth-open" opacity="0"><ellipse cx="150" cy="192" rx="14" ry="12" fill="#7A3B2E" stroke="#1B1A17" stroke-width="5"/></g>
+  <g id="prot-blush" opacity="0"><ellipse cx="100" cy="166" rx="18" ry="10" fill="#E4543C" opacity=".55"/><ellipse cx="200" cy="166" rx="18" ry="10" fill="#E4543C" opacity=".55"/></g>
+  <path id="prot-sweat" d="M244 116 Q254 138 244 148 Q234 138 244 116" fill="#8CC9D9" stroke="#1B1A17" stroke-width="4" opacity="0"/>
+</svg>
+
+      <svg class="s01-eyes" id="s01-eyes" viewBox="0 0 300 420">
+        <rect x="95" y="108" width="42" height="50" rx="19" fill="#F2C9A0"/>
+        <rect x="163" y="108" width="42" height="50" rx="19" fill="#F2C9A0"/>
+        <path d="M 103 136 Q 116 146 129 136" fill="none" stroke="#1B1A17" stroke-width="5" stroke-linecap="round"/>
+        <path d="M 171 136 Q 184 146 197 136" fill="none" stroke="#1B1A17" stroke-width="5" stroke-linecap="round"/>
+      </svg>
+    </div>
+
+    <svg class="s01-blanket" id="s01-blanket" viewBox="0 0 1080 1920">
+      <g transform="translate(0 45)">
+      <path d="M 458 1038
+               C 520 1010 572 1044 632 1022
+               C 692 1000 748 1036 812 1014
+               C 836 1006 850 1016 854 1032
+               L 848 1166
+               C 792 1190 736 1158 676 1176
+               C 618 1194 566 1164 506 1178
+               C 480 1184 462 1168 460 1154 Z"
+            fill="#E4543C" stroke="#1B1A17" stroke-width="8" stroke-linejoin="round"/>
+      <path d="M 470 1036 C 530 1012 582 1046 642 1024"
+            fill="none" stroke="#FFF3DA" stroke-width="9" stroke-linecap="round"/>
+      <path d="M 500 1084 C 560 1062 606 1096 664 1074 C 714 1056 764 1082 812 1066"
+            fill="none" stroke="#C7422E" stroke-width="7" stroke-linecap="round"/>
+      </g>
+    </svg>
+  </div>
+</div>
+
+<script>
+  const tl = gsap.timeline({ paused: true });
+
+  // Asleep: head tipped, eyes shut.
+  tl.set("#s01-prot", { rotate: 2 }, 0);
+
+  // Wake: eyes snap open, brows and mouth react.
+  tl.set("#s01-eyes", { opacity: 0 }, 1.2);
+  tl.set("#s01-prot #prot-brow-normal", { opacity: 0 }, 1.2);
+  tl.set("#s01-prot #prot-brow-shock", { opacity: 1 }, 1.2);
+  tl.set("#s01-prot #prot-mouth-flat", { opacity: 0 }, 1.2);
+  tl.set("#s01-prot #prot-mouth-shock", { opacity: 1 }, 1.2);
+
+  // Tween 1: the jolt upright, then a small bounce settle.
+  tl.to("#s01-prot", {
+    keyframes: [
+      { y: -24, rotate: -2, duration: 0.16, ease: "power2.out" },
+      { y: 0, rotate: 2, duration: 0.5, ease: "bounce.out" }
+    ]
+  }, 1.32);
+
+  // Tween 2: the blanket lifts and flops back down.
+  tl.to("#s01-blanket", {
+    keyframes: [
+      { y: -16, duration: 0.16, ease: "power2.out" },
+      { y: 0, duration: 0.45, ease: "power2.out" }
+    ]
+  }, 1.4);
+
+  window.__timelines["s01"] = tl;
+</script>
+
+</template>

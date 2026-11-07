@@ -1,0 +1,1231 @@
+<template>
+<style>
+@font-face {
+  font-family: "Kanit";
+  src: url("assets/fonts/Kanit-Medium.ttf") format("truetype");
+  font-weight: 500;
+}
+@font-face {
+  font-family: "Kanit";
+  src: url("assets/fonts/Kanit-Bold.ttf") format("truetype");
+  font-weight: 700;
+}
+@font-face {
+  font-family: "Kanit";
+  src: url("assets/fonts/Kanit-ExtraBold.ttf") format("truetype");
+  font-weight: 800;
+}
+@font-face {
+  font-family: "PlexThai";
+  src: url("assets/fonts/IBMPlexSansThaiLooped-Regular.ttf") format("truetype");
+  font-weight: 400;
+}
+@font-face {
+  font-family: "PlexThai";
+  src: url("assets/fonts/IBMPlexSansThaiLooped-Medium.ttf") format("truetype");
+  font-weight: 500;
+}
+
+* {
+  margin: 0;
+  padding: 0;
+  box-sizing: border-box;
+}
+
+#root {
+  position: absolute;
+  inset: 0;
+  overflow: hidden;
+  background: #f7ebd2;
+  font-family: "Kanit", sans-serif;
+  -webkit-font-smoothing: antialiased;
+}
+
+.stage {
+  position: absolute;
+  inset: 0;
+  transform-origin: 50% 48%;
+}
+
+.char {
+  position: absolute;
+  transform-origin: 50% 100%;
+  z-index: 8;
+}
+
+.char svg {
+  display: block;
+  width: 100%;
+  height: 100%;
+  overflow: visible;
+}
+
+.blink {
+  transform-origin: 50% 100%;
+}
+
+/* A phone notification that lives in the cartoon world. */
+.notif {
+  position: absolute;
+  width: 430px;
+  padding: 16px 18px;
+  display: flex;
+  gap: 14px;
+  align-items: center;
+  background: #fff8e8;
+  border: 4px solid #1b1a17;
+  border-radius: 18px;
+  box-shadow: 0 8px 0 rgba(27, 26, 23, 0.16);
+  z-index: 30;
+}
+
+.notif .ico {
+  width: 54px;
+  height: 54px;
+  border-radius: 14px;
+  background: #e5533d;
+  flex: none;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: #f7ebd2;
+  font: 800 26px/1 "Kanit", sans-serif;
+}
+
+.notif .copy {
+  font: 600 20px/1.25 "Kanit", sans-serif;
+  color: #1b1a17;
+}
+
+.notif .copy small {
+  display: block;
+  margin-top: 3px;
+  font: 500 16px/1.2 "PlexThai", sans-serif;
+  color: #6b5a48;
+}
+
+.paper {
+  background: #fff8e8;
+  border: 4px solid #1b1a17;
+  border-radius: 14px;
+  box-shadow: 0 8px 0 rgba(27, 26, 23, 0.14);
+}
+
+</style>
+<script>
+/* Minimal 2D "stage" helpers shared by every scene.
+ *
+ * Two problems this solves:
+ *   1. characters floating above / sinking under the floor
+ *      -> Stage.snap() puts the soles exactly on a named floor element
+ *   2. a camera push that reads as "the props are growing"
+ *      -> Stage.camera() moves background / world / foreground at different
+ *         rates around a single focus point, so it reads as depth, not scale
+ *
+ * Character SVG contract: viewBox 0 0 300 420, soles at y=410.
+ */
+
+(function () {
+  var SOLE = 410;
+  var VB_H = 420;
+
+  function soleOf(el) {
+    var r = el.getBoundingClientRect();
+    return r.top + r.height * (SOLE / VB_H);
+  }
+
+  /**
+   * Put every matched element's feet on the top edge of `floorSelector`.
+   * Elements must share an offsetParent with the floor (a lift cabin, a room).
+   */
+  function snap(selector, floorSelector, opts) {
+    var floor = document.querySelector(floorSelector);
+    if (!floor) return [];
+    var floorY = floor.getBoundingClientRect().top;
+    var els = document.querySelectorAll(selector);
+    var moved = [];
+    for (var i = 0; i < els.length; i++) {
+      var el = els[i];
+      var delta = floorY - soleOf(el) - (opts && opts.gap ? opts.gap : 0);
+      if (Math.abs(delta) < 0.5) {
+        moved.push(0);
+        continue;
+      }
+      el.style.top = (el.offsetTop + delta).toFixed(1) + "px";
+      moved.push(Number(delta.toFixed(1)));
+    }
+    return moved;
+  }
+
+  /**
+   * Parallax camera move. Layers tagged .cam-bg / .cam-world / .cam-fg
+   * scale by different amounts around the same focus point.
+   *
+   *   Stage.camera(tl, { zoom: 0.05, duration: 3.6, origin: "540px 1200px" });
+   */
+  function camera(tl, opts) {
+    opts = opts || {};
+    var zoom = opts.zoom == null ? 0.045 : opts.zoom;
+    var at = opts.at == null ? 0 : opts.at;
+    var dur = opts.duration == null ? 3.6 : opts.duration;
+    var ease = opts.ease || "none";
+    var origin = opts.origin || "540px 1200px";
+    var rates = opts.rates || { ".cam-bg": 0.45, ".cam-world": 1, ".cam-fg": 1.55 };
+    var applied = [];
+
+    Object.keys(rates).forEach(function (sel) {
+      var els = document.querySelectorAll(sel);
+      if (!els.length) return;
+      tl.fromTo(
+        els,
+        { scale: 1, transformOrigin: origin },
+        { scale: 1 + zoom * rates[sel], duration: dur, ease: ease },
+        at,
+      );
+      applied.push(sel);
+    });
+
+    return applied;
+  }
+
+  /**
+   * Real camera dolly using CSS 3D. Layers sit at different z; moving them all by the
+   * same amount makes near layers grow more than far ones — which is what a camera does,
+   * as opposed to `scale`, which grows everything equally and reads as "props inflating".
+   *
+   *   Stage.dolly(tl, { layers: [{ sel: "#s47-bg", z: -300 }, { sel: "#s47-stage", z: 0 }], move: 140 });
+   */
+  function dolly(tl, opts) {
+    opts = opts || {};
+    var rootEl = document.querySelector("#root");
+    if (!rootEl) return false;
+    var perspective = opts.perspective == null ? 1400 : opts.perspective;
+    rootEl.style.perspective = perspective + "px";
+    rootEl.style.perspectiveOrigin = opts.origin || "50% 62%";
+    rootEl.style.transformStyle = "preserve-3d";
+
+    var layers = opts.layers || [];
+    var move = opts.move == null ? 120 : opts.move;
+    var dur = opts.duration == null ? 3.6 : opts.duration;
+    var at = opts.at == null ? 0 : opts.at;
+    var applied = [];
+
+    layers.forEach(function (layer) {
+      var els = document.querySelectorAll(layer.sel);
+      if (!els.length) return;
+      var z0 = layer.z || 0;
+      // pre-scale so the layer still fills the frame at its resting depth
+      var comp = (perspective - z0) / perspective;
+      for (var i = 0; i < els.length; i++) {
+        els[i].style.transformStyle = "preserve-3d";
+        els[i].style.backfaceVisibility = "hidden";
+      }
+      tl.fromTo(els, { z: z0, scale: comp }, { z: z0 + move, duration: dur, ease: "none" }, at);
+      applied.push(layer.sel);
+    });
+
+    return applied;
+  }
+
+  /**
+   * Gravity-correct fall. Starts at rest, accelerates down, fades near the end.
+   * `y` is the drop distance in px; positive is down.
+   */
+  function fall(tl, target, opts) {
+    opts = opts || {};
+    var at = opts.at == null ? 0 : opts.at;
+    var dur = opts.duration == null ? 0.7 : opts.duration;
+    var drop = opts.drop == null ? 56 : opts.drop;
+    var stagger = opts.stagger || 0;
+    return tl.fromTo(
+      target,
+      { y: 0, opacity: 0 },
+      { y: drop, opacity: 1, duration: dur, ease: "power2.in", stagger: stagger },
+      at,
+    );
+  }
+
+  window.Stage = { snap: snap, camera: camera, dolly: dolly, fall: fall, soleOf: soleOf };
+})();
+
+</script>
+<style>
+  .s48-bg { position: absolute; inset: 0; z-index: 1; }
+  .s48-bg svg { display: block; width: 1080px; height: 1920px; }
+  #s48-stage { position: absolute; inset: 0; z-index: 2; transform-origin: 50% 48%; }
+
+  #s48-prot { left: 390px; top: 940px; width: 300px; height: 420px; z-index: 8; }
+
+  /* Everyone smiles at the table. */
+  #s48-prot #prot-mouth-flat { opacity: 0; }
+  #s48-prot #prot-mouth-smile { opacity: 1; }
+  #s48-prot #prot-brow-shock,
+  #s48-prot #prot-brow-sad { opacity: 0; }
+
+  .s48-hunk { position: absolute; width: 200px; height: 280px; z-index: 4; }
+  .s48-hunk #hunk-mouth-flat { opacity: 0; }
+  .s48-hunk #hunk-mouth-smile { opacity: 1; }
+  .s48-hunk #hunk-brow-shock,
+  .s48-hunk #hunk-brow-sad { opacity: 0; }
+  .s48-hunk #hunk-arm-l {
+    transform: rotate(155deg); transform-box: view-box; transform-origin: 106px 206px;
+  }
+  .s48-hunk #hunk-arm-r {
+    transform: rotate(-155deg); transform-box: view-box; transform-origin: 194px 206px;
+  }
+  #s48-prot #prot-arm-l {
+    transform: rotate(150deg); transform-box: view-box; transform-origin: 100px 250px;
+  }
+
+  /* Mookata grill. */
+  .s48-grill {
+    position: absolute; left: 300px; top: 1350px; width: 480px; height: 260px;
+    z-index: 10;
+  }
+  .s48-grill .pan {
+    position: absolute; left: 0; top: 70px; width: 480px; height: 180px;
+    background: #3B3A55; border: 8px solid #1B1A17; border-radius: 50%;
+  }
+  .s48-grill .broth {
+    position: absolute; left: 26px; top: 90px; width: 428px; height: 140px;
+    background: #C08A55; border: 6px solid #1B1A17; border-radius: 50%;
+  }
+  .s48-grill .dome {
+    position: absolute; left: 165px; top: 20px; width: 150px; height: 150px;
+    background: #B9AC9C; border: 7px solid #1B1A17;
+    border-radius: 50% 50% 40% 40%;
+  }
+  .s48-grill .dome::before {
+    content: ""; position: absolute; left: 28px; top: 24px; width: 94px; height: 52px;
+    border-top: 8px solid #FFF8E8; border-radius: 50%; opacity: 0.55;
+  }
+  .s48-grill .dome-rim {
+    position: absolute; left: 152px; top: 148px; width: 176px; height: 34px;
+    background: #8A5A3B; border: 6px solid #1B1A17; border-radius: 50%;
+  }
+  .s48-grill .knob {
+    position: absolute; left: 226px; top: 4px; width: 28px; height: 28px;
+    background: #8E8779; border: 5px solid #1B1A17; border-radius: 50%;
+  }
+  .s48-grill .vent {
+    position: absolute; width: 16px; height: 12px; border-radius: 50%;
+    background: #1B1A17;
+  }
+  .s48-grill .v1 { left: 205px; top: 58px; }
+  .s48-grill .v2 { left: 240px; top: 52px; }
+  .s48-grill .v3 { left: 262px; top: 82px; }
+  .s48-grill .v4 { left: 190px; top: 96px; }
+  .s48-grill .pork {
+    position: absolute; width: 42px; height: 20px; border-radius: 8px;
+    background: #E8A08A; border: 4px solid #1B1A17;
+  }
+  .s48-grill .p1 { left: 172px; top: 34px; transform: rotate(-14deg); }
+  .s48-grill .p2 { left: 224px; top: 26px; transform: rotate(10deg); }
+  .s48-grill .p3 { left: 252px; top: 60px; transform: rotate(-6deg); }
+  .s48-grill .p4 { left: 180px; top: 66px; transform: rotate(18deg); }
+  .s48-grill .p5 { left: 250px; top: 98px; transform: rotate(-18deg); }
+  .s48-grill .coal {
+    position: absolute; top: 116px; width: 34px; height: 22px;
+    background: #2A2A33; border: 4px solid #1B1A17; border-radius: 8px;
+  }
+  .s48-grill .c1 { left: 70px; transform: rotate(8deg); }
+  .s48-grill .c2 { left: 370px; transform: rotate(-8deg); }
+
+  /* Soda glasses, all raised toward the middle. */
+  .s48-glass {
+    position: absolute; width: 46px; height: 82px; z-index: 14;
+    transform-origin: 50% 100%;
+  }
+  .s48-glass .cup {
+    position: absolute; left: 0; bottom: 0; width: 46px; height: 70px;
+    background: #8CC9D9; border: 5px solid #1B1A17;
+    border-radius: 5px 5px 18px 18px; overflow: hidden;
+  }
+  .s48-glass .cup::after {
+    content: ""; position: absolute; left: -6px; right: -6px; bottom: -4px; height: 44px;
+    background: #F08A3C; border-top: 4px solid #1B1A17;
+  }
+  .s48-glass .straw {
+    position: absolute; left: 26px; top: 0; width: 8px; height: 36px;
+    background: #E5533D; border: 3px solid #1B1A17; border-radius: 3px;
+    transform: rotate(12deg); transform-origin: 50% 100%;
+  }
+</style>
+
+<div id="root" data-composition-id="s48" data-width="1080" data-height="1920">
+  <div class="s48-bg"><svg viewBox="0 0 1080 1920" xmlns="http://www.w3.org/2000/svg">
+  <rect width="1080" height="1920" fill="#1B2A3A"/>
+  <rect x="0" y="0" width="1080" height="1400" fill="#22384A"/>
+  <rect x="0" y="1400" width="1080" height="520" fill="#3B3026"/>
+  <rect x="0" y="1380" width="1080" height="40" fill="#4A3D30" stroke="#1B1A17" stroke-width="7"/>
+
+  <!-- steel door -->
+  <rect x="20" y="690" width="190" height="700" fill="#5C6B62" stroke="#1B1A17" stroke-width="8"/>
+  <rect x="44" y="720" width="142" height="280" fill="#4A5A52" stroke="#1B1A17" stroke-width="5"/>
+  <rect x="44" y="1040" width="142" height="280" fill="#4A5A52" stroke="#1B1A17" stroke-width="5"/>
+  <circle cx="160" cy="1020" r="11" fill="#F2B233" stroke="#1B1A17" stroke-width="4"/>
+
+  <!-- whiteboard -->
+  <rect x="300" y="330" width="650" height="520" fill="#FFF8E8" stroke="#1B1A17" stroke-width="9" rx="8"/>
+  <rect x="330" y="370" width="590" height="440" fill="#E9E4D6" stroke="#1B1A17" stroke-width="5"/>
+  <!-- abstract world map -->
+  <path d="M380 500 q60 -60 130 -20 q50 20 40 90 q-10 60 -80 70 q-70 10 -100 -40 q-20 -40 10 -100 Z" fill="#7FA650" stroke="#1B1A17" stroke-width="5"/>
+  <path d="M560 470 q80 -40 140 10 q50 40 20 100 q-30 60 -100 40 q-60 -20 -60 -80 Z" fill="#7FA650" stroke="#1B1A17" stroke-width="5"/>
+  <path d="M720 560 q70 -30 120 20 q30 40 -10 90 q-50 50 -100 10 q-40 -30 -10 -120 Z" fill="#7FA650" stroke="#1B1A17" stroke-width="5"/>
+  <circle cx="460" cy="520" r="8" fill="#E5533D" stroke="#1B1A17" stroke-width="3"/>
+  <circle cx="620" cy="540" r="8" fill="#E5533D" stroke="#1B1A17" stroke-width="3"/>
+  <circle cx="780" cy="610" r="8" fill="#E5533D" stroke="#1B1A17" stroke-width="3"/>
+  <line x1="460" y1="520" x2="620" y2="540" stroke="#E5533D" stroke-width="4" stroke-dasharray="8 8"/>
+  <line x1="620" y1="540" x2="780" y2="610" stroke="#E5533D" stroke-width="4" stroke-dasharray="8 8"/>
+
+  <!-- desk -->
+  <rect x="180" y="1150" width="800" height="60" fill="#8A5A3B" stroke="#1B1A17" stroke-width="8"/>
+  <rect x="220" y="1210" width="40" height="190" fill="#6B432C" stroke="#1B1A17" stroke-width="6"/>
+  <rect x="900" y="1210" width="40" height="190" fill="#6B432C" stroke="#1B1A17" stroke-width="6"/>
+
+  <!-- monitors -->
+  <rect x="260" y="960" width="230" height="160" fill="#1B1A17" stroke="#1B1A17" stroke-width="8" rx="8"/>
+  <rect x="280" y="980" width="190" height="120" fill="#8CC9D9" stroke="#1B1A17" stroke-width="4"/>
+  <rect x="620" y="930" width="260" height="190" fill="#1B1A17" stroke="#1B1A17" stroke-width="8" rx="8"/>
+  <rect x="642" y="952" width="216" height="146" fill="#8CC9D9" stroke="#1B1A17" stroke-width="4"/>
+  <rect x="330" y="1120" width="90" height="30" fill="#3B3A55" stroke="#1B1A17" stroke-width="5"/>
+  <rect x="720" y="1120" width="80" height="30" fill="#3B3A55" stroke="#1B1A17" stroke-width="5"/>
+
+  <!-- hanging bulb -->
+  <line x1="540" y1="0" x2="540" y2="250" stroke="#1B1A17" stroke-width="4"/>
+  <rect x="510" y="230" width="60" height="30" fill="#3B3A55" stroke="#1B1A17" stroke-width="5"/>
+  <circle cx="540" cy="285" r="30" fill="#F2B233" stroke="#1B1A17" stroke-width="6"/>
+
+  <!-- crates + cables -->
+  <rect x="760" y="1310" width="100" height="90" fill="#A9673B" stroke="#1B1A17" stroke-width="6"/>
+  <rect x="780" y="1240" width="80" height="70" fill="#C08A55" stroke="#1B1A17" stroke-width="6"/>
+  <path d="M0 1330 q180 40 330 -10 q120 -40 240 10" fill="none" stroke="#1B1A17" stroke-width="6"/>
+  <path d="M30 1360 q200 30 360 -20" fill="none" stroke="#E5533D" stroke-width="5"/>
+</svg>
+</div>
+  <div id="s48-stage">
+    <div class="char s48-hunk" style="left: 10px; top: 940px; filter: hue-rotate(-16deg)"><svg viewBox="0 0 300 420" xmlns="http://www.w3.org/2000/svg">
+  <ellipse cx="150" cy="410" rx="82" ry="8" fill="#000" opacity=".16"/>
+
+  <!-- sparkle diamonds (hidden until animated) -->
+  <g id="hunk-sparkle" opacity="0">
+    <path d="M44 50 L46.8 57.2 L54 60 L46.8 62.8 L44 70 L41.2 62.8 L34 60 L41.2 57.2 Z" fill="#FFD24A" stroke="#1B1A17" stroke-width="3"/>
+    <path d="M256 54 L259.4 62.6 L268 66 L259.4 69.4 L256 78 L252.6 69.4 L244 66 L252.6 62.6 Z" fill="#FFD24A" stroke="#1B1A17" stroke-width="3"/>
+    <path d="M268 149 L270.5 155.5 L277 158 L270.5 160.5 L268 167 L265.5 160.5 L259 158 L265.5 155.5 Z" fill="#FFFDF6" stroke="#1B1A17" stroke-width="3"/>
+    <path d="M32 160 L34.2 165.8 L40 168 L34.2 170.2 L32 176 L29.8 170.2 L24 168 L29.8 165.8 Z" fill="#FFFDF6" stroke="#1B1A17" stroke-width="3"/>
+    <path d="M70 17 L72 22 L77 24 L72 26 L70 31 L68 26 L63 24 L68 22 Z" fill="#FFD24A" stroke="#1B1A17" stroke-width="3"/>
+    <path d="M228 12 L230.2 17.8 L236 20 L230.2 22.2 L228 28 L225.8 22.2 L220 20 L225.8 17.8 Z" fill="#FFD24A" stroke="#1B1A17" stroke-width="3"/>
+    <path d="M278 229 L280 234 L285 236 L280 238 L278 243 L276 238 L271 236 L276 234 Z" fill="#FFFDF6" stroke="#1B1A17" stroke-width="3"/>
+    <path d="M22 239 L24.5 245.5 L31 248 L24.5 250.5 L22 257 L19.5 250.5 L13 248 L19.5 245.5 Z" fill="#FFD24A" stroke="#1B1A17" stroke-width="3"/>
+  </g>
+
+  <!-- legs, hips and shoes -->
+  <g id="hunk-leg-l">
+    <rect x="109" y="326" width="34" height="66" rx="14" fill="#2E3B55" stroke="#1B1A17" stroke-width="7"/>
+    <rect x="103" y="387" width="46" height="19.5" rx="10" fill="#1B1A17" stroke="#1B1A17" stroke-width="7"/>
+  </g>
+  <g id="hunk-leg-r">
+    <rect x="157" y="326" width="34" height="66" rx="14" fill="#2E3B55" stroke="#1B1A17" stroke-width="7"/>
+    <rect x="151" y="387" width="46" height="19.5" rx="10" fill="#1B1A17" stroke="#1B1A17" stroke-width="7"/>
+  </g>
+  <rect x="104" y="330" width="92" height="44" rx="14" fill="#2E3B55" stroke="#1B1A17" stroke-width="7"/>
+
+  <!-- body -->
+  <g id="hunk-body">
+    <rect x="131" y="146" width="38" height="58" fill="#D89A5E" stroke="#1B1A17" stroke-width="7"/>
+    <path d="M92 198 C102 186 122 180 150 180 C178 180 198 186 208 198 C212 218 208 244 202 268 C197 296 195 322 192 340 C190 358 176 366 150 366 C124 366 110 358 108 340 C105 322 103 296 98 268 C92 244 88 218 92 198 Z"
+          fill="#D89A5E" stroke="#1B1A17" stroke-width="7" stroke-linejoin="round"/>
+    <path d="M124 206 Q138 214 148 210 M176 206 Q162 214 152 210" fill="none" stroke="#B87A3F" stroke-width="4" stroke-linecap="round"/>
+
+    <!-- tight white tank top -->
+    <path d="M102 194 C110 187 130 183 150 183 C170 183 190 187 198 194 C206 218 202 244 197 268 C192 296 190 326 188 342 C186 360 170 364 150 364 C130 364 114 360 112 342 C110 326 108 296 103 268 C98 244 94 218 102 194 Z"
+          fill="#FFFDF6" stroke="#1B1A17" stroke-width="7" stroke-linejoin="round"/>
+    <path d="M126 187 C131 207 140 218 150 218 C160 218 169 207 174 187 C166 183 158 181 150 181 C142 181 134 183 126 187 Z"
+          fill="#D89A5E" stroke="#1B1A17" stroke-width="7" stroke-linejoin="round"/>
+
+    <!-- fabric seams and muscle definition -->
+    <path d="M118 194 C112 212 110 232 110 252" fill="none" stroke="#D9CFBB" stroke-width="4" stroke-linecap="round"/>
+    <path d="M182 194 C188 212 190 232 190 252" fill="none" stroke="#D9CFBB" stroke-width="4" stroke-linecap="round"/>
+    <path d="M122 238 Q134 248 148 242 M178 238 Q166 248 152 242" fill="none" stroke="#D9CFBB" stroke-width="4" stroke-linecap="round"/>
+    <path d="M120 242 Q150 256 180 242" fill="none" stroke="#D9CFBB" stroke-width="5" stroke-linecap="round"/>
+    <path d="M150 218 L150 262" fill="none" stroke="#D9CFBB" stroke-width="4" stroke-linecap="round"/>
+    <path d="M150 266 L150 330" fill="none" stroke="#D9CFBB" stroke-width="4" stroke-linecap="round"/>
+    <path d="M136 292 Q150 300 164 292 M138 314 Q150 322 162 314" fill="none" stroke="#D9CFBB" stroke-width="4" stroke-linecap="round"/>
+    <path d="M124 276 Q118 300 124 322 M176 276 Q182 300 176 322" fill="none" stroke="#D9CFBB" stroke-width="4" stroke-linecap="round"/>
+    <path d="M112 338 Q150 352 188 338" fill="none" stroke="#E8DEC9" stroke-width="5" stroke-linecap="round"/>
+    <path d="M110 230 Q118 250 114 268" fill="none" stroke="#D9CFBB" stroke-width="4" stroke-linecap="round"/>
+    <path d="M190 230 Q182 250 186 268" fill="none" stroke="#D9CFBB" stroke-width="4" stroke-linecap="round"/>
+  </g>
+
+  <!-- arms (drawn over the torso so the shoulder joints stay visually attached) -->
+  <g id="hunk-arm-l" style="transform-box:view-box;transform-origin:114px 212px">
+    <circle cx="106" cy="206" r="19" fill="#D89A5E" stroke="#1B1A17" stroke-width="7"/>
+    <path d="M106 202 C88 198 72 208 66 228 C60 248 58 272 62 294 C64 312 64 326 66 336 C68 348 80 354 90 348 C99 343 102 334 100 322 C97 304 98 284 102 266 C106 248 112 230 114 214 Z"
+          fill="#D89A5E" stroke="#1B1A17" stroke-width="7" stroke-linejoin="round"/>
+    <path d="M78 238 C72 252 71 268 74 282" fill="none" stroke="#B87A3F" stroke-width="5" stroke-linecap="round"/>
+    <path d="M100 218 Q90 224 84 236" fill="none" stroke="#B87A3F" stroke-width="4" stroke-linecap="round"/>
+    <path d="M70 294 Q78 300 84 296" fill="none" stroke="#B87A3F" stroke-width="4" stroke-linecap="round"/>
+    <ellipse cx="86" cy="360" rx="18" ry="16" fill="#D89A5E" stroke="#1B1A17" stroke-width="7"/>
+    <path d="M74 356 Q78 362 84 364" fill="none" stroke="#B87A3F" stroke-width="3.5" stroke-linecap="round"/>
+  </g>
+
+  <g id="hunk-arm-r" style="transform-box:view-box;transform-origin:186px 212px">
+    <circle cx="194" cy="206" r="19" fill="#D89A5E" stroke="#1B1A17" stroke-width="7"/>
+    <path d="M194 202 C212 198 228 208 234 228 C240 248 242 272 238 294 C236 312 236 326 234 336 C232 348 220 354 210 348 C201 343 198 334 200 322 C203 304 202 284 198 266 C194 248 188 230 186 214 Z"
+          fill="#D89A5E" stroke="#1B1A17" stroke-width="7" stroke-linejoin="round"/>
+    <path d="M222 238 C228 252 229 268 226 282" fill="none" stroke="#B87A3F" stroke-width="5" stroke-linecap="round"/>
+    <path d="M200 218 Q210 224 216 236" fill="none" stroke="#B87A3F" stroke-width="4" stroke-linecap="round"/>
+    <path d="M230 294 Q222 300 216 296" fill="none" stroke="#B87A3F" stroke-width="4" stroke-linecap="round"/>
+    <ellipse cx="214" cy="360" rx="18" ry="16" fill="#D89A5E" stroke="#1B1A17" stroke-width="7"/>
+    <path d="M226 356 Q222 362 216 364" fill="none" stroke="#B87A3F" stroke-width="3.5" stroke-linecap="round"/>
+  </g>
+
+  <!-- head -->
+  <g id="hunk-head" style="transform-box:view-box;transform-origin:150px 164px">
+    <ellipse cx="92" cy="106" rx="11" ry="15" fill="#D89A5E" stroke="#1B1A17" stroke-width="7"/>
+    <ellipse cx="208" cy="106" rx="11" ry="15" fill="#D89A5E" stroke="#1B1A17" stroke-width="7"/>
+    <path d="M96 102 Q96 108 100 111" fill="none" stroke="#B87A3F" stroke-width="3.5" stroke-linecap="round"/>
+    <path d="M204 102 Q204 108 200 111" fill="none" stroke="#B87A3F" stroke-width="3.5" stroke-linecap="round"/>
+
+    <path d="M90 92 C90 56 114 34 150 34 C186 34 210 56 210 92 C210 120 206 140 196 152 C186 164 170 170 150 170 C130 170 114 164 104 152 C94 140 90 120 90 92 Z"
+          fill="#D89A5E" stroke="#1B1A17" stroke-width="7" stroke-linejoin="round"/>
+
+    <!-- styled hair -->
+    <path d="M88 102 C88 60 110 34 150 34 C190 34 212 60 212 102 C206 92 202 82 200 72 C184 78 166 78 150 76 C132 74 114 76 100 72 C98 82 94 92 88 102 Z"
+          fill="#2B201B" stroke="#1B1A17" stroke-width="7" stroke-linejoin="round"/>
+    <path d="M102 74 C102 42 126 16 158 14 C188 12 210 30 216 58 C204 50 192 46 182 50 C194 38 194 26 188 20 C182 36 166 50 142 58 C126 64 112 70 102 74 Z"
+          fill="#2B201B" stroke="#1B1A17" stroke-width="7" stroke-linejoin="round"/>
+    <path d="M116 48 C128 30 146 20 164 18" fill="none" stroke="#4A382E" stroke-width="7" stroke-linecap="round"/>
+    <path d="M172 38 C182 34 192 38 199 46" fill="none" stroke="#4A382E" stroke-width="6" stroke-linecap="round"/>
+    <circle cx="207" cy="120" r="4" fill="#F2B233" stroke="#1B1A17" stroke-width="2.5"/>
+
+    <!-- eyes -->
+    <ellipse cx="122" cy="106" rx="16" ry="19" fill="#FFFDF6" stroke="#1B1A17" stroke-width="5"/>
+    <ellipse cx="178" cy="106" rx="16" ry="19" fill="#FFFDF6" stroke="#1B1A17" stroke-width="5"/>
+    <path d="M107 98 Q122 91 137 98" fill="none" stroke="#1B1A17" stroke-width="5" stroke-linecap="round"/>
+    <path d="M163 98 Q178 91 193 98" fill="none" stroke="#1B1A17" stroke-width="5" stroke-linecap="round"/>
+    <circle id="hunk-pupil-l" cx="124" cy="108" r="8" fill="#1B1A17"/>
+    <circle id="hunk-pupil-r" cx="176" cy="108" r="8" fill="#1B1A17"/>
+    <circle cx="118" cy="101" r="3.2" fill="#FFFDF6"/>
+    <circle cx="170" cy="101" r="3.2" fill="#FFFDF6"/>
+    <circle cx="128" cy="114" r="2" fill="#FFFDF6"/>
+    <circle cx="180" cy="114" r="2" fill="#FFFDF6"/>
+    <circle cx="168" cy="130" r="2.4" fill="#7A4A2A"/>
+
+    <!-- brows -->
+    <g id="hunk-brow-normal">
+      <path d="M100 92 Q118 86 136 90" fill="none" stroke="#1B1A17" stroke-width="8" stroke-linecap="round"/>
+      <path d="M164 86 Q182 80 200 88" fill="none" stroke="#1B1A17" stroke-width="8" stroke-linecap="round"/>
+    </g>
+    <g id="hunk-brow-shock" opacity="0">
+      <path d="M100 84 Q118 70 136 82" fill="none" stroke="#1B1A17" stroke-width="8" stroke-linecap="round"/>
+      <path d="M164 78 Q182 64 200 78" fill="none" stroke="#1B1A17" stroke-width="8" stroke-linecap="round"/>
+    </g>
+    <g id="hunk-brow-sad" opacity="0">
+      <path d="M100 94 Q118 96 136 82" fill="none" stroke="#1B1A17" stroke-width="8" stroke-linecap="round"/>
+      <path d="M164 82 Q182 96 200 94" fill="none" stroke="#1B1A17" stroke-width="8" stroke-linecap="round"/>
+    </g>
+
+    <!-- nose and cheek -->
+    <path d="M150 114 C146 126 144 136 150 140" fill="none" stroke="#1B1A17" stroke-width="6" stroke-linecap="round"/>
+    <path d="M144 142 Q150 146 156 143" fill="none" stroke="#B87A3F" stroke-width="4" stroke-linecap="round"/>
+    <path d="M110 128 Q118 136 128 134" fill="none" stroke="#B87A3F" stroke-width="4" stroke-linecap="round"/>
+    <path d="M190 128 Q182 136 172 134" fill="none" stroke="#B87A3F" stroke-width="4" stroke-linecap="round"/>
+
+    <!-- mouths -->
+    <g id="hunk-mouth-flat"><path d="M126 152 Q150 158 174 146" fill="none" stroke="#1B1A17" stroke-width="7" stroke-linecap="round"/></g>
+    <g id="hunk-mouth-smile" opacity="0">
+      <path d="M124 148 Q150 176 176 146" fill="none" stroke="#1B1A17" stroke-width="7" stroke-linecap="round"/>
+      <path d="M178 146 Q182 142 180 138" fill="none" stroke="#1B1A17" stroke-width="5" stroke-linecap="round"/>
+    </g>
+    <g id="hunk-mouth-shock" opacity="0"><ellipse cx="150" cy="154" rx="11" ry="13" fill="#7A3B2E" stroke="#1B1A17" stroke-width="5"/></g>
+    <g id="hunk-mouth-open" opacity="0">
+      <ellipse cx="150" cy="154" rx="19" ry="11" fill="#7A3B2E" stroke="#1B1A17" stroke-width="5"/>
+      <path d="M134 148 Q150 142 166 148 Q150 154 134 148 Z" fill="#FFFDF6"/>
+    </g>
+  </g>
+</svg>
+</div>
+    <div class="char s48-hunk" style="left: 218px; top: 880px; filter: hue-rotate(8deg)"><svg viewBox="0 0 300 420" xmlns="http://www.w3.org/2000/svg">
+  <ellipse cx="150" cy="410" rx="82" ry="8" fill="#000" opacity=".16"/>
+
+  <!-- sparkle diamonds (hidden until animated) -->
+  <g id="hunk-sparkle" opacity="0">
+    <path d="M44 50 L46.8 57.2 L54 60 L46.8 62.8 L44 70 L41.2 62.8 L34 60 L41.2 57.2 Z" fill="#FFD24A" stroke="#1B1A17" stroke-width="3"/>
+    <path d="M256 54 L259.4 62.6 L268 66 L259.4 69.4 L256 78 L252.6 69.4 L244 66 L252.6 62.6 Z" fill="#FFD24A" stroke="#1B1A17" stroke-width="3"/>
+    <path d="M268 149 L270.5 155.5 L277 158 L270.5 160.5 L268 167 L265.5 160.5 L259 158 L265.5 155.5 Z" fill="#FFFDF6" stroke="#1B1A17" stroke-width="3"/>
+    <path d="M32 160 L34.2 165.8 L40 168 L34.2 170.2 L32 176 L29.8 170.2 L24 168 L29.8 165.8 Z" fill="#FFFDF6" stroke="#1B1A17" stroke-width="3"/>
+    <path d="M70 17 L72 22 L77 24 L72 26 L70 31 L68 26 L63 24 L68 22 Z" fill="#FFD24A" stroke="#1B1A17" stroke-width="3"/>
+    <path d="M228 12 L230.2 17.8 L236 20 L230.2 22.2 L228 28 L225.8 22.2 L220 20 L225.8 17.8 Z" fill="#FFD24A" stroke="#1B1A17" stroke-width="3"/>
+    <path d="M278 229 L280 234 L285 236 L280 238 L278 243 L276 238 L271 236 L276 234 Z" fill="#FFFDF6" stroke="#1B1A17" stroke-width="3"/>
+    <path d="M22 239 L24.5 245.5 L31 248 L24.5 250.5 L22 257 L19.5 250.5 L13 248 L19.5 245.5 Z" fill="#FFD24A" stroke="#1B1A17" stroke-width="3"/>
+  </g>
+
+  <!-- legs, hips and shoes -->
+  <g id="hunk-leg-l">
+    <rect x="109" y="326" width="34" height="66" rx="14" fill="#2E3B55" stroke="#1B1A17" stroke-width="7"/>
+    <rect x="103" y="387" width="46" height="19.5" rx="10" fill="#1B1A17" stroke="#1B1A17" stroke-width="7"/>
+  </g>
+  <g id="hunk-leg-r">
+    <rect x="157" y="326" width="34" height="66" rx="14" fill="#2E3B55" stroke="#1B1A17" stroke-width="7"/>
+    <rect x="151" y="387" width="46" height="19.5" rx="10" fill="#1B1A17" stroke="#1B1A17" stroke-width="7"/>
+  </g>
+  <rect x="104" y="330" width="92" height="44" rx="14" fill="#2E3B55" stroke="#1B1A17" stroke-width="7"/>
+
+  <!-- body -->
+  <g id="hunk-body">
+    <rect x="131" y="146" width="38" height="58" fill="#D89A5E" stroke="#1B1A17" stroke-width="7"/>
+    <path d="M92 198 C102 186 122 180 150 180 C178 180 198 186 208 198 C212 218 208 244 202 268 C197 296 195 322 192 340 C190 358 176 366 150 366 C124 366 110 358 108 340 C105 322 103 296 98 268 C92 244 88 218 92 198 Z"
+          fill="#D89A5E" stroke="#1B1A17" stroke-width="7" stroke-linejoin="round"/>
+    <path d="M124 206 Q138 214 148 210 M176 206 Q162 214 152 210" fill="none" stroke="#B87A3F" stroke-width="4" stroke-linecap="round"/>
+
+    <!-- tight white tank top -->
+    <path d="M102 194 C110 187 130 183 150 183 C170 183 190 187 198 194 C206 218 202 244 197 268 C192 296 190 326 188 342 C186 360 170 364 150 364 C130 364 114 360 112 342 C110 326 108 296 103 268 C98 244 94 218 102 194 Z"
+          fill="#FFFDF6" stroke="#1B1A17" stroke-width="7" stroke-linejoin="round"/>
+    <path d="M126 187 C131 207 140 218 150 218 C160 218 169 207 174 187 C166 183 158 181 150 181 C142 181 134 183 126 187 Z"
+          fill="#D89A5E" stroke="#1B1A17" stroke-width="7" stroke-linejoin="round"/>
+
+    <!-- fabric seams and muscle definition -->
+    <path d="M118 194 C112 212 110 232 110 252" fill="none" stroke="#D9CFBB" stroke-width="4" stroke-linecap="round"/>
+    <path d="M182 194 C188 212 190 232 190 252" fill="none" stroke="#D9CFBB" stroke-width="4" stroke-linecap="round"/>
+    <path d="M122 238 Q134 248 148 242 M178 238 Q166 248 152 242" fill="none" stroke="#D9CFBB" stroke-width="4" stroke-linecap="round"/>
+    <path d="M120 242 Q150 256 180 242" fill="none" stroke="#D9CFBB" stroke-width="5" stroke-linecap="round"/>
+    <path d="M150 218 L150 262" fill="none" stroke="#D9CFBB" stroke-width="4" stroke-linecap="round"/>
+    <path d="M150 266 L150 330" fill="none" stroke="#D9CFBB" stroke-width="4" stroke-linecap="round"/>
+    <path d="M136 292 Q150 300 164 292 M138 314 Q150 322 162 314" fill="none" stroke="#D9CFBB" stroke-width="4" stroke-linecap="round"/>
+    <path d="M124 276 Q118 300 124 322 M176 276 Q182 300 176 322" fill="none" stroke="#D9CFBB" stroke-width="4" stroke-linecap="round"/>
+    <path d="M112 338 Q150 352 188 338" fill="none" stroke="#E8DEC9" stroke-width="5" stroke-linecap="round"/>
+    <path d="M110 230 Q118 250 114 268" fill="none" stroke="#D9CFBB" stroke-width="4" stroke-linecap="round"/>
+    <path d="M190 230 Q182 250 186 268" fill="none" stroke="#D9CFBB" stroke-width="4" stroke-linecap="round"/>
+  </g>
+
+  <!-- arms (drawn over the torso so the shoulder joints stay visually attached) -->
+  <g id="hunk-arm-l" style="transform-box:view-box;transform-origin:114px 212px">
+    <circle cx="106" cy="206" r="19" fill="#D89A5E" stroke="#1B1A17" stroke-width="7"/>
+    <path d="M106 202 C88 198 72 208 66 228 C60 248 58 272 62 294 C64 312 64 326 66 336 C68 348 80 354 90 348 C99 343 102 334 100 322 C97 304 98 284 102 266 C106 248 112 230 114 214 Z"
+          fill="#D89A5E" stroke="#1B1A17" stroke-width="7" stroke-linejoin="round"/>
+    <path d="M78 238 C72 252 71 268 74 282" fill="none" stroke="#B87A3F" stroke-width="5" stroke-linecap="round"/>
+    <path d="M100 218 Q90 224 84 236" fill="none" stroke="#B87A3F" stroke-width="4" stroke-linecap="round"/>
+    <path d="M70 294 Q78 300 84 296" fill="none" stroke="#B87A3F" stroke-width="4" stroke-linecap="round"/>
+    <ellipse cx="86" cy="360" rx="18" ry="16" fill="#D89A5E" stroke="#1B1A17" stroke-width="7"/>
+    <path d="M74 356 Q78 362 84 364" fill="none" stroke="#B87A3F" stroke-width="3.5" stroke-linecap="round"/>
+  </g>
+
+  <g id="hunk-arm-r" style="transform-box:view-box;transform-origin:186px 212px">
+    <circle cx="194" cy="206" r="19" fill="#D89A5E" stroke="#1B1A17" stroke-width="7"/>
+    <path d="M194 202 C212 198 228 208 234 228 C240 248 242 272 238 294 C236 312 236 326 234 336 C232 348 220 354 210 348 C201 343 198 334 200 322 C203 304 202 284 198 266 C194 248 188 230 186 214 Z"
+          fill="#D89A5E" stroke="#1B1A17" stroke-width="7" stroke-linejoin="round"/>
+    <path d="M222 238 C228 252 229 268 226 282" fill="none" stroke="#B87A3F" stroke-width="5" stroke-linecap="round"/>
+    <path d="M200 218 Q210 224 216 236" fill="none" stroke="#B87A3F" stroke-width="4" stroke-linecap="round"/>
+    <path d="M230 294 Q222 300 216 296" fill="none" stroke="#B87A3F" stroke-width="4" stroke-linecap="round"/>
+    <ellipse cx="214" cy="360" rx="18" ry="16" fill="#D89A5E" stroke="#1B1A17" stroke-width="7"/>
+    <path d="M226 356 Q222 362 216 364" fill="none" stroke="#B87A3F" stroke-width="3.5" stroke-linecap="round"/>
+  </g>
+
+  <!-- head -->
+  <g id="hunk-head" style="transform-box:view-box;transform-origin:150px 164px">
+    <ellipse cx="92" cy="106" rx="11" ry="15" fill="#D89A5E" stroke="#1B1A17" stroke-width="7"/>
+    <ellipse cx="208" cy="106" rx="11" ry="15" fill="#D89A5E" stroke="#1B1A17" stroke-width="7"/>
+    <path d="M96 102 Q96 108 100 111" fill="none" stroke="#B87A3F" stroke-width="3.5" stroke-linecap="round"/>
+    <path d="M204 102 Q204 108 200 111" fill="none" stroke="#B87A3F" stroke-width="3.5" stroke-linecap="round"/>
+
+    <path d="M90 92 C90 56 114 34 150 34 C186 34 210 56 210 92 C210 120 206 140 196 152 C186 164 170 170 150 170 C130 170 114 164 104 152 C94 140 90 120 90 92 Z"
+          fill="#D89A5E" stroke="#1B1A17" stroke-width="7" stroke-linejoin="round"/>
+
+    <!-- styled hair -->
+    <path d="M88 102 C88 60 110 34 150 34 C190 34 212 60 212 102 C206 92 202 82 200 72 C184 78 166 78 150 76 C132 74 114 76 100 72 C98 82 94 92 88 102 Z"
+          fill="#2B201B" stroke="#1B1A17" stroke-width="7" stroke-linejoin="round"/>
+    <path d="M102 74 C102 42 126 16 158 14 C188 12 210 30 216 58 C204 50 192 46 182 50 C194 38 194 26 188 20 C182 36 166 50 142 58 C126 64 112 70 102 74 Z"
+          fill="#2B201B" stroke="#1B1A17" stroke-width="7" stroke-linejoin="round"/>
+    <path d="M116 48 C128 30 146 20 164 18" fill="none" stroke="#4A382E" stroke-width="7" stroke-linecap="round"/>
+    <path d="M172 38 C182 34 192 38 199 46" fill="none" stroke="#4A382E" stroke-width="6" stroke-linecap="round"/>
+    <circle cx="207" cy="120" r="4" fill="#F2B233" stroke="#1B1A17" stroke-width="2.5"/>
+
+    <!-- eyes -->
+    <ellipse cx="122" cy="106" rx="16" ry="19" fill="#FFFDF6" stroke="#1B1A17" stroke-width="5"/>
+    <ellipse cx="178" cy="106" rx="16" ry="19" fill="#FFFDF6" stroke="#1B1A17" stroke-width="5"/>
+    <path d="M107 98 Q122 91 137 98" fill="none" stroke="#1B1A17" stroke-width="5" stroke-linecap="round"/>
+    <path d="M163 98 Q178 91 193 98" fill="none" stroke="#1B1A17" stroke-width="5" stroke-linecap="round"/>
+    <circle id="hunk-pupil-l" cx="124" cy="108" r="8" fill="#1B1A17"/>
+    <circle id="hunk-pupil-r" cx="176" cy="108" r="8" fill="#1B1A17"/>
+    <circle cx="118" cy="101" r="3.2" fill="#FFFDF6"/>
+    <circle cx="170" cy="101" r="3.2" fill="#FFFDF6"/>
+    <circle cx="128" cy="114" r="2" fill="#FFFDF6"/>
+    <circle cx="180" cy="114" r="2" fill="#FFFDF6"/>
+    <circle cx="168" cy="130" r="2.4" fill="#7A4A2A"/>
+
+    <!-- brows -->
+    <g id="hunk-brow-normal">
+      <path d="M100 92 Q118 86 136 90" fill="none" stroke="#1B1A17" stroke-width="8" stroke-linecap="round"/>
+      <path d="M164 86 Q182 80 200 88" fill="none" stroke="#1B1A17" stroke-width="8" stroke-linecap="round"/>
+    </g>
+    <g id="hunk-brow-shock" opacity="0">
+      <path d="M100 84 Q118 70 136 82" fill="none" stroke="#1B1A17" stroke-width="8" stroke-linecap="round"/>
+      <path d="M164 78 Q182 64 200 78" fill="none" stroke="#1B1A17" stroke-width="8" stroke-linecap="round"/>
+    </g>
+    <g id="hunk-brow-sad" opacity="0">
+      <path d="M100 94 Q118 96 136 82" fill="none" stroke="#1B1A17" stroke-width="8" stroke-linecap="round"/>
+      <path d="M164 82 Q182 96 200 94" fill="none" stroke="#1B1A17" stroke-width="8" stroke-linecap="round"/>
+    </g>
+
+    <!-- nose and cheek -->
+    <path d="M150 114 C146 126 144 136 150 140" fill="none" stroke="#1B1A17" stroke-width="6" stroke-linecap="round"/>
+    <path d="M144 142 Q150 146 156 143" fill="none" stroke="#B87A3F" stroke-width="4" stroke-linecap="round"/>
+    <path d="M110 128 Q118 136 128 134" fill="none" stroke="#B87A3F" stroke-width="4" stroke-linecap="round"/>
+    <path d="M190 128 Q182 136 172 134" fill="none" stroke="#B87A3F" stroke-width="4" stroke-linecap="round"/>
+
+    <!-- mouths -->
+    <g id="hunk-mouth-flat"><path d="M126 152 Q150 158 174 146" fill="none" stroke="#1B1A17" stroke-width="7" stroke-linecap="round"/></g>
+    <g id="hunk-mouth-smile" opacity="0">
+      <path d="M124 148 Q150 176 176 146" fill="none" stroke="#1B1A17" stroke-width="7" stroke-linecap="round"/>
+      <path d="M178 146 Q182 142 180 138" fill="none" stroke="#1B1A17" stroke-width="5" stroke-linecap="round"/>
+    </g>
+    <g id="hunk-mouth-shock" opacity="0"><ellipse cx="150" cy="154" rx="11" ry="13" fill="#7A3B2E" stroke="#1B1A17" stroke-width="5"/></g>
+    <g id="hunk-mouth-open" opacity="0">
+      <ellipse cx="150" cy="154" rx="19" ry="11" fill="#7A3B2E" stroke="#1B1A17" stroke-width="5"/>
+      <path d="M134 148 Q150 142 166 148 Q150 154 134 148 Z" fill="#FFFDF6"/>
+    </g>
+  </g>
+</svg>
+</div>
+    <div class="char s48-hunk" style="left: 440px; top: 820px; filter: hue-rotate(24deg)"><svg viewBox="0 0 300 420" xmlns="http://www.w3.org/2000/svg">
+  <ellipse cx="150" cy="410" rx="82" ry="8" fill="#000" opacity=".16"/>
+
+  <!-- sparkle diamonds (hidden until animated) -->
+  <g id="hunk-sparkle" opacity="0">
+    <path d="M44 50 L46.8 57.2 L54 60 L46.8 62.8 L44 70 L41.2 62.8 L34 60 L41.2 57.2 Z" fill="#FFD24A" stroke="#1B1A17" stroke-width="3"/>
+    <path d="M256 54 L259.4 62.6 L268 66 L259.4 69.4 L256 78 L252.6 69.4 L244 66 L252.6 62.6 Z" fill="#FFD24A" stroke="#1B1A17" stroke-width="3"/>
+    <path d="M268 149 L270.5 155.5 L277 158 L270.5 160.5 L268 167 L265.5 160.5 L259 158 L265.5 155.5 Z" fill="#FFFDF6" stroke="#1B1A17" stroke-width="3"/>
+    <path d="M32 160 L34.2 165.8 L40 168 L34.2 170.2 L32 176 L29.8 170.2 L24 168 L29.8 165.8 Z" fill="#FFFDF6" stroke="#1B1A17" stroke-width="3"/>
+    <path d="M70 17 L72 22 L77 24 L72 26 L70 31 L68 26 L63 24 L68 22 Z" fill="#FFD24A" stroke="#1B1A17" stroke-width="3"/>
+    <path d="M228 12 L230.2 17.8 L236 20 L230.2 22.2 L228 28 L225.8 22.2 L220 20 L225.8 17.8 Z" fill="#FFD24A" stroke="#1B1A17" stroke-width="3"/>
+    <path d="M278 229 L280 234 L285 236 L280 238 L278 243 L276 238 L271 236 L276 234 Z" fill="#FFFDF6" stroke="#1B1A17" stroke-width="3"/>
+    <path d="M22 239 L24.5 245.5 L31 248 L24.5 250.5 L22 257 L19.5 250.5 L13 248 L19.5 245.5 Z" fill="#FFD24A" stroke="#1B1A17" stroke-width="3"/>
+  </g>
+
+  <!-- legs, hips and shoes -->
+  <g id="hunk-leg-l">
+    <rect x="109" y="326" width="34" height="66" rx="14" fill="#2E3B55" stroke="#1B1A17" stroke-width="7"/>
+    <rect x="103" y="387" width="46" height="19.5" rx="10" fill="#1B1A17" stroke="#1B1A17" stroke-width="7"/>
+  </g>
+  <g id="hunk-leg-r">
+    <rect x="157" y="326" width="34" height="66" rx="14" fill="#2E3B55" stroke="#1B1A17" stroke-width="7"/>
+    <rect x="151" y="387" width="46" height="19.5" rx="10" fill="#1B1A17" stroke="#1B1A17" stroke-width="7"/>
+  </g>
+  <rect x="104" y="330" width="92" height="44" rx="14" fill="#2E3B55" stroke="#1B1A17" stroke-width="7"/>
+
+  <!-- body -->
+  <g id="hunk-body">
+    <rect x="131" y="146" width="38" height="58" fill="#D89A5E" stroke="#1B1A17" stroke-width="7"/>
+    <path d="M92 198 C102 186 122 180 150 180 C178 180 198 186 208 198 C212 218 208 244 202 268 C197 296 195 322 192 340 C190 358 176 366 150 366 C124 366 110 358 108 340 C105 322 103 296 98 268 C92 244 88 218 92 198 Z"
+          fill="#D89A5E" stroke="#1B1A17" stroke-width="7" stroke-linejoin="round"/>
+    <path d="M124 206 Q138 214 148 210 M176 206 Q162 214 152 210" fill="none" stroke="#B87A3F" stroke-width="4" stroke-linecap="round"/>
+
+    <!-- tight white tank top -->
+    <path d="M102 194 C110 187 130 183 150 183 C170 183 190 187 198 194 C206 218 202 244 197 268 C192 296 190 326 188 342 C186 360 170 364 150 364 C130 364 114 360 112 342 C110 326 108 296 103 268 C98 244 94 218 102 194 Z"
+          fill="#FFFDF6" stroke="#1B1A17" stroke-width="7" stroke-linejoin="round"/>
+    <path d="M126 187 C131 207 140 218 150 218 C160 218 169 207 174 187 C166 183 158 181 150 181 C142 181 134 183 126 187 Z"
+          fill="#D89A5E" stroke="#1B1A17" stroke-width="7" stroke-linejoin="round"/>
+
+    <!-- fabric seams and muscle definition -->
+    <path d="M118 194 C112 212 110 232 110 252" fill="none" stroke="#D9CFBB" stroke-width="4" stroke-linecap="round"/>
+    <path d="M182 194 C188 212 190 232 190 252" fill="none" stroke="#D9CFBB" stroke-width="4" stroke-linecap="round"/>
+    <path d="M122 238 Q134 248 148 242 M178 238 Q166 248 152 242" fill="none" stroke="#D9CFBB" stroke-width="4" stroke-linecap="round"/>
+    <path d="M120 242 Q150 256 180 242" fill="none" stroke="#D9CFBB" stroke-width="5" stroke-linecap="round"/>
+    <path d="M150 218 L150 262" fill="none" stroke="#D9CFBB" stroke-width="4" stroke-linecap="round"/>
+    <path d="M150 266 L150 330" fill="none" stroke="#D9CFBB" stroke-width="4" stroke-linecap="round"/>
+    <path d="M136 292 Q150 300 164 292 M138 314 Q150 322 162 314" fill="none" stroke="#D9CFBB" stroke-width="4" stroke-linecap="round"/>
+    <path d="M124 276 Q118 300 124 322 M176 276 Q182 300 176 322" fill="none" stroke="#D9CFBB" stroke-width="4" stroke-linecap="round"/>
+    <path d="M112 338 Q150 352 188 338" fill="none" stroke="#E8DEC9" stroke-width="5" stroke-linecap="round"/>
+    <path d="M110 230 Q118 250 114 268" fill="none" stroke="#D9CFBB" stroke-width="4" stroke-linecap="round"/>
+    <path d="M190 230 Q182 250 186 268" fill="none" stroke="#D9CFBB" stroke-width="4" stroke-linecap="round"/>
+  </g>
+
+  <!-- arms (drawn over the torso so the shoulder joints stay visually attached) -->
+  <g id="hunk-arm-l" style="transform-box:view-box;transform-origin:114px 212px">
+    <circle cx="106" cy="206" r="19" fill="#D89A5E" stroke="#1B1A17" stroke-width="7"/>
+    <path d="M106 202 C88 198 72 208 66 228 C60 248 58 272 62 294 C64 312 64 326 66 336 C68 348 80 354 90 348 C99 343 102 334 100 322 C97 304 98 284 102 266 C106 248 112 230 114 214 Z"
+          fill="#D89A5E" stroke="#1B1A17" stroke-width="7" stroke-linejoin="round"/>
+    <path d="M78 238 C72 252 71 268 74 282" fill="none" stroke="#B87A3F" stroke-width="5" stroke-linecap="round"/>
+    <path d="M100 218 Q90 224 84 236" fill="none" stroke="#B87A3F" stroke-width="4" stroke-linecap="round"/>
+    <path d="M70 294 Q78 300 84 296" fill="none" stroke="#B87A3F" stroke-width="4" stroke-linecap="round"/>
+    <ellipse cx="86" cy="360" rx="18" ry="16" fill="#D89A5E" stroke="#1B1A17" stroke-width="7"/>
+    <path d="M74 356 Q78 362 84 364" fill="none" stroke="#B87A3F" stroke-width="3.5" stroke-linecap="round"/>
+  </g>
+
+  <g id="hunk-arm-r" style="transform-box:view-box;transform-origin:186px 212px">
+    <circle cx="194" cy="206" r="19" fill="#D89A5E" stroke="#1B1A17" stroke-width="7"/>
+    <path d="M194 202 C212 198 228 208 234 228 C240 248 242 272 238 294 C236 312 236 326 234 336 C232 348 220 354 210 348 C201 343 198 334 200 322 C203 304 202 284 198 266 C194 248 188 230 186 214 Z"
+          fill="#D89A5E" stroke="#1B1A17" stroke-width="7" stroke-linejoin="round"/>
+    <path d="M222 238 C228 252 229 268 226 282" fill="none" stroke="#B87A3F" stroke-width="5" stroke-linecap="round"/>
+    <path d="M200 218 Q210 224 216 236" fill="none" stroke="#B87A3F" stroke-width="4" stroke-linecap="round"/>
+    <path d="M230 294 Q222 300 216 296" fill="none" stroke="#B87A3F" stroke-width="4" stroke-linecap="round"/>
+    <ellipse cx="214" cy="360" rx="18" ry="16" fill="#D89A5E" stroke="#1B1A17" stroke-width="7"/>
+    <path d="M226 356 Q222 362 216 364" fill="none" stroke="#B87A3F" stroke-width="3.5" stroke-linecap="round"/>
+  </g>
+
+  <!-- head -->
+  <g id="hunk-head" style="transform-box:view-box;transform-origin:150px 164px">
+    <ellipse cx="92" cy="106" rx="11" ry="15" fill="#D89A5E" stroke="#1B1A17" stroke-width="7"/>
+    <ellipse cx="208" cy="106" rx="11" ry="15" fill="#D89A5E" stroke="#1B1A17" stroke-width="7"/>
+    <path d="M96 102 Q96 108 100 111" fill="none" stroke="#B87A3F" stroke-width="3.5" stroke-linecap="round"/>
+    <path d="M204 102 Q204 108 200 111" fill="none" stroke="#B87A3F" stroke-width="3.5" stroke-linecap="round"/>
+
+    <path d="M90 92 C90 56 114 34 150 34 C186 34 210 56 210 92 C210 120 206 140 196 152 C186 164 170 170 150 170 C130 170 114 164 104 152 C94 140 90 120 90 92 Z"
+          fill="#D89A5E" stroke="#1B1A17" stroke-width="7" stroke-linejoin="round"/>
+
+    <!-- styled hair -->
+    <path d="M88 102 C88 60 110 34 150 34 C190 34 212 60 212 102 C206 92 202 82 200 72 C184 78 166 78 150 76 C132 74 114 76 100 72 C98 82 94 92 88 102 Z"
+          fill="#2B201B" stroke="#1B1A17" stroke-width="7" stroke-linejoin="round"/>
+    <path d="M102 74 C102 42 126 16 158 14 C188 12 210 30 216 58 C204 50 192 46 182 50 C194 38 194 26 188 20 C182 36 166 50 142 58 C126 64 112 70 102 74 Z"
+          fill="#2B201B" stroke="#1B1A17" stroke-width="7" stroke-linejoin="round"/>
+    <path d="M116 48 C128 30 146 20 164 18" fill="none" stroke="#4A382E" stroke-width="7" stroke-linecap="round"/>
+    <path d="M172 38 C182 34 192 38 199 46" fill="none" stroke="#4A382E" stroke-width="6" stroke-linecap="round"/>
+    <circle cx="207" cy="120" r="4" fill="#F2B233" stroke="#1B1A17" stroke-width="2.5"/>
+
+    <!-- eyes -->
+    <ellipse cx="122" cy="106" rx="16" ry="19" fill="#FFFDF6" stroke="#1B1A17" stroke-width="5"/>
+    <ellipse cx="178" cy="106" rx="16" ry="19" fill="#FFFDF6" stroke="#1B1A17" stroke-width="5"/>
+    <path d="M107 98 Q122 91 137 98" fill="none" stroke="#1B1A17" stroke-width="5" stroke-linecap="round"/>
+    <path d="M163 98 Q178 91 193 98" fill="none" stroke="#1B1A17" stroke-width="5" stroke-linecap="round"/>
+    <circle id="hunk-pupil-l" cx="124" cy="108" r="8" fill="#1B1A17"/>
+    <circle id="hunk-pupil-r" cx="176" cy="108" r="8" fill="#1B1A17"/>
+    <circle cx="118" cy="101" r="3.2" fill="#FFFDF6"/>
+    <circle cx="170" cy="101" r="3.2" fill="#FFFDF6"/>
+    <circle cx="128" cy="114" r="2" fill="#FFFDF6"/>
+    <circle cx="180" cy="114" r="2" fill="#FFFDF6"/>
+    <circle cx="168" cy="130" r="2.4" fill="#7A4A2A"/>
+
+    <!-- brows -->
+    <g id="hunk-brow-normal">
+      <path d="M100 92 Q118 86 136 90" fill="none" stroke="#1B1A17" stroke-width="8" stroke-linecap="round"/>
+      <path d="M164 86 Q182 80 200 88" fill="none" stroke="#1B1A17" stroke-width="8" stroke-linecap="round"/>
+    </g>
+    <g id="hunk-brow-shock" opacity="0">
+      <path d="M100 84 Q118 70 136 82" fill="none" stroke="#1B1A17" stroke-width="8" stroke-linecap="round"/>
+      <path d="M164 78 Q182 64 200 78" fill="none" stroke="#1B1A17" stroke-width="8" stroke-linecap="round"/>
+    </g>
+    <g id="hunk-brow-sad" opacity="0">
+      <path d="M100 94 Q118 96 136 82" fill="none" stroke="#1B1A17" stroke-width="8" stroke-linecap="round"/>
+      <path d="M164 82 Q182 96 200 94" fill="none" stroke="#1B1A17" stroke-width="8" stroke-linecap="round"/>
+    </g>
+
+    <!-- nose and cheek -->
+    <path d="M150 114 C146 126 144 136 150 140" fill="none" stroke="#1B1A17" stroke-width="6" stroke-linecap="round"/>
+    <path d="M144 142 Q150 146 156 143" fill="none" stroke="#B87A3F" stroke-width="4" stroke-linecap="round"/>
+    <path d="M110 128 Q118 136 128 134" fill="none" stroke="#B87A3F" stroke-width="4" stroke-linecap="round"/>
+    <path d="M190 128 Q182 136 172 134" fill="none" stroke="#B87A3F" stroke-width="4" stroke-linecap="round"/>
+
+    <!-- mouths -->
+    <g id="hunk-mouth-flat"><path d="M126 152 Q150 158 174 146" fill="none" stroke="#1B1A17" stroke-width="7" stroke-linecap="round"/></g>
+    <g id="hunk-mouth-smile" opacity="0">
+      <path d="M124 148 Q150 176 176 146" fill="none" stroke="#1B1A17" stroke-width="7" stroke-linecap="round"/>
+      <path d="M178 146 Q182 142 180 138" fill="none" stroke="#1B1A17" stroke-width="5" stroke-linecap="round"/>
+    </g>
+    <g id="hunk-mouth-shock" opacity="0"><ellipse cx="150" cy="154" rx="11" ry="13" fill="#7A3B2E" stroke="#1B1A17" stroke-width="5"/></g>
+    <g id="hunk-mouth-open" opacity="0">
+      <ellipse cx="150" cy="154" rx="19" ry="11" fill="#7A3B2E" stroke="#1B1A17" stroke-width="5"/>
+      <path d="M134 148 Q150 142 166 148 Q150 154 134 148 Z" fill="#FFFDF6"/>
+    </g>
+  </g>
+</svg>
+</div>
+    <div class="char s48-hunk" style="left: 662px; top: 880px; filter: hue-rotate(-24deg)"><svg viewBox="0 0 300 420" xmlns="http://www.w3.org/2000/svg">
+  <ellipse cx="150" cy="410" rx="82" ry="8" fill="#000" opacity=".16"/>
+
+  <!-- sparkle diamonds (hidden until animated) -->
+  <g id="hunk-sparkle" opacity="0">
+    <path d="M44 50 L46.8 57.2 L54 60 L46.8 62.8 L44 70 L41.2 62.8 L34 60 L41.2 57.2 Z" fill="#FFD24A" stroke="#1B1A17" stroke-width="3"/>
+    <path d="M256 54 L259.4 62.6 L268 66 L259.4 69.4 L256 78 L252.6 69.4 L244 66 L252.6 62.6 Z" fill="#FFD24A" stroke="#1B1A17" stroke-width="3"/>
+    <path d="M268 149 L270.5 155.5 L277 158 L270.5 160.5 L268 167 L265.5 160.5 L259 158 L265.5 155.5 Z" fill="#FFFDF6" stroke="#1B1A17" stroke-width="3"/>
+    <path d="M32 160 L34.2 165.8 L40 168 L34.2 170.2 L32 176 L29.8 170.2 L24 168 L29.8 165.8 Z" fill="#FFFDF6" stroke="#1B1A17" stroke-width="3"/>
+    <path d="M70 17 L72 22 L77 24 L72 26 L70 31 L68 26 L63 24 L68 22 Z" fill="#FFD24A" stroke="#1B1A17" stroke-width="3"/>
+    <path d="M228 12 L230.2 17.8 L236 20 L230.2 22.2 L228 28 L225.8 22.2 L220 20 L225.8 17.8 Z" fill="#FFD24A" stroke="#1B1A17" stroke-width="3"/>
+    <path d="M278 229 L280 234 L285 236 L280 238 L278 243 L276 238 L271 236 L276 234 Z" fill="#FFFDF6" stroke="#1B1A17" stroke-width="3"/>
+    <path d="M22 239 L24.5 245.5 L31 248 L24.5 250.5 L22 257 L19.5 250.5 L13 248 L19.5 245.5 Z" fill="#FFD24A" stroke="#1B1A17" stroke-width="3"/>
+  </g>
+
+  <!-- legs, hips and shoes -->
+  <g id="hunk-leg-l">
+    <rect x="109" y="326" width="34" height="66" rx="14" fill="#2E3B55" stroke="#1B1A17" stroke-width="7"/>
+    <rect x="103" y="387" width="46" height="19.5" rx="10" fill="#1B1A17" stroke="#1B1A17" stroke-width="7"/>
+  </g>
+  <g id="hunk-leg-r">
+    <rect x="157" y="326" width="34" height="66" rx="14" fill="#2E3B55" stroke="#1B1A17" stroke-width="7"/>
+    <rect x="151" y="387" width="46" height="19.5" rx="10" fill="#1B1A17" stroke="#1B1A17" stroke-width="7"/>
+  </g>
+  <rect x="104" y="330" width="92" height="44" rx="14" fill="#2E3B55" stroke="#1B1A17" stroke-width="7"/>
+
+  <!-- body -->
+  <g id="hunk-body">
+    <rect x="131" y="146" width="38" height="58" fill="#D89A5E" stroke="#1B1A17" stroke-width="7"/>
+    <path d="M92 198 C102 186 122 180 150 180 C178 180 198 186 208 198 C212 218 208 244 202 268 C197 296 195 322 192 340 C190 358 176 366 150 366 C124 366 110 358 108 340 C105 322 103 296 98 268 C92 244 88 218 92 198 Z"
+          fill="#D89A5E" stroke="#1B1A17" stroke-width="7" stroke-linejoin="round"/>
+    <path d="M124 206 Q138 214 148 210 M176 206 Q162 214 152 210" fill="none" stroke="#B87A3F" stroke-width="4" stroke-linecap="round"/>
+
+    <!-- tight white tank top -->
+    <path d="M102 194 C110 187 130 183 150 183 C170 183 190 187 198 194 C206 218 202 244 197 268 C192 296 190 326 188 342 C186 360 170 364 150 364 C130 364 114 360 112 342 C110 326 108 296 103 268 C98 244 94 218 102 194 Z"
+          fill="#FFFDF6" stroke="#1B1A17" stroke-width="7" stroke-linejoin="round"/>
+    <path d="M126 187 C131 207 140 218 150 218 C160 218 169 207 174 187 C166 183 158 181 150 181 C142 181 134 183 126 187 Z"
+          fill="#D89A5E" stroke="#1B1A17" stroke-width="7" stroke-linejoin="round"/>
+
+    <!-- fabric seams and muscle definition -->
+    <path d="M118 194 C112 212 110 232 110 252" fill="none" stroke="#D9CFBB" stroke-width="4" stroke-linecap="round"/>
+    <path d="M182 194 C188 212 190 232 190 252" fill="none" stroke="#D9CFBB" stroke-width="4" stroke-linecap="round"/>
+    <path d="M122 238 Q134 248 148 242 M178 238 Q166 248 152 242" fill="none" stroke="#D9CFBB" stroke-width="4" stroke-linecap="round"/>
+    <path d="M120 242 Q150 256 180 242" fill="none" stroke="#D9CFBB" stroke-width="5" stroke-linecap="round"/>
+    <path d="M150 218 L150 262" fill="none" stroke="#D9CFBB" stroke-width="4" stroke-linecap="round"/>
+    <path d="M150 266 L150 330" fill="none" stroke="#D9CFBB" stroke-width="4" stroke-linecap="round"/>
+    <path d="M136 292 Q150 300 164 292 M138 314 Q150 322 162 314" fill="none" stroke="#D9CFBB" stroke-width="4" stroke-linecap="round"/>
+    <path d="M124 276 Q118 300 124 322 M176 276 Q182 300 176 322" fill="none" stroke="#D9CFBB" stroke-width="4" stroke-linecap="round"/>
+    <path d="M112 338 Q150 352 188 338" fill="none" stroke="#E8DEC9" stroke-width="5" stroke-linecap="round"/>
+    <path d="M110 230 Q118 250 114 268" fill="none" stroke="#D9CFBB" stroke-width="4" stroke-linecap="round"/>
+    <path d="M190 230 Q182 250 186 268" fill="none" stroke="#D9CFBB" stroke-width="4" stroke-linecap="round"/>
+  </g>
+
+  <!-- arms (drawn over the torso so the shoulder joints stay visually attached) -->
+  <g id="hunk-arm-l" style="transform-box:view-box;transform-origin:114px 212px">
+    <circle cx="106" cy="206" r="19" fill="#D89A5E" stroke="#1B1A17" stroke-width="7"/>
+    <path d="M106 202 C88 198 72 208 66 228 C60 248 58 272 62 294 C64 312 64 326 66 336 C68 348 80 354 90 348 C99 343 102 334 100 322 C97 304 98 284 102 266 C106 248 112 230 114 214 Z"
+          fill="#D89A5E" stroke="#1B1A17" stroke-width="7" stroke-linejoin="round"/>
+    <path d="M78 238 C72 252 71 268 74 282" fill="none" stroke="#B87A3F" stroke-width="5" stroke-linecap="round"/>
+    <path d="M100 218 Q90 224 84 236" fill="none" stroke="#B87A3F" stroke-width="4" stroke-linecap="round"/>
+    <path d="M70 294 Q78 300 84 296" fill="none" stroke="#B87A3F" stroke-width="4" stroke-linecap="round"/>
+    <ellipse cx="86" cy="360" rx="18" ry="16" fill="#D89A5E" stroke="#1B1A17" stroke-width="7"/>
+    <path d="M74 356 Q78 362 84 364" fill="none" stroke="#B87A3F" stroke-width="3.5" stroke-linecap="round"/>
+  </g>
+
+  <g id="hunk-arm-r" style="transform-box:view-box;transform-origin:186px 212px">
+    <circle cx="194" cy="206" r="19" fill="#D89A5E" stroke="#1B1A17" stroke-width="7"/>
+    <path d="M194 202 C212 198 228 208 234 228 C240 248 242 272 238 294 C236 312 236 326 234 336 C232 348 220 354 210 348 C201 343 198 334 200 322 C203 304 202 284 198 266 C194 248 188 230 186 214 Z"
+          fill="#D89A5E" stroke="#1B1A17" stroke-width="7" stroke-linejoin="round"/>
+    <path d="M222 238 C228 252 229 268 226 282" fill="none" stroke="#B87A3F" stroke-width="5" stroke-linecap="round"/>
+    <path d="M200 218 Q210 224 216 236" fill="none" stroke="#B87A3F" stroke-width="4" stroke-linecap="round"/>
+    <path d="M230 294 Q222 300 216 296" fill="none" stroke="#B87A3F" stroke-width="4" stroke-linecap="round"/>
+    <ellipse cx="214" cy="360" rx="18" ry="16" fill="#D89A5E" stroke="#1B1A17" stroke-width="7"/>
+    <path d="M226 356 Q222 362 216 364" fill="none" stroke="#B87A3F" stroke-width="3.5" stroke-linecap="round"/>
+  </g>
+
+  <!-- head -->
+  <g id="hunk-head" style="transform-box:view-box;transform-origin:150px 164px">
+    <ellipse cx="92" cy="106" rx="11" ry="15" fill="#D89A5E" stroke="#1B1A17" stroke-width="7"/>
+    <ellipse cx="208" cy="106" rx="11" ry="15" fill="#D89A5E" stroke="#1B1A17" stroke-width="7"/>
+    <path d="M96 102 Q96 108 100 111" fill="none" stroke="#B87A3F" stroke-width="3.5" stroke-linecap="round"/>
+    <path d="M204 102 Q204 108 200 111" fill="none" stroke="#B87A3F" stroke-width="3.5" stroke-linecap="round"/>
+
+    <path d="M90 92 C90 56 114 34 150 34 C186 34 210 56 210 92 C210 120 206 140 196 152 C186 164 170 170 150 170 C130 170 114 164 104 152 C94 140 90 120 90 92 Z"
+          fill="#D89A5E" stroke="#1B1A17" stroke-width="7" stroke-linejoin="round"/>
+
+    <!-- styled hair -->
+    <path d="M88 102 C88 60 110 34 150 34 C190 34 212 60 212 102 C206 92 202 82 200 72 C184 78 166 78 150 76 C132 74 114 76 100 72 C98 82 94 92 88 102 Z"
+          fill="#2B201B" stroke="#1B1A17" stroke-width="7" stroke-linejoin="round"/>
+    <path d="M102 74 C102 42 126 16 158 14 C188 12 210 30 216 58 C204 50 192 46 182 50 C194 38 194 26 188 20 C182 36 166 50 142 58 C126 64 112 70 102 74 Z"
+          fill="#2B201B" stroke="#1B1A17" stroke-width="7" stroke-linejoin="round"/>
+    <path d="M116 48 C128 30 146 20 164 18" fill="none" stroke="#4A382E" stroke-width="7" stroke-linecap="round"/>
+    <path d="M172 38 C182 34 192 38 199 46" fill="none" stroke="#4A382E" stroke-width="6" stroke-linecap="round"/>
+    <circle cx="207" cy="120" r="4" fill="#F2B233" stroke="#1B1A17" stroke-width="2.5"/>
+
+    <!-- eyes -->
+    <ellipse cx="122" cy="106" rx="16" ry="19" fill="#FFFDF6" stroke="#1B1A17" stroke-width="5"/>
+    <ellipse cx="178" cy="106" rx="16" ry="19" fill="#FFFDF6" stroke="#1B1A17" stroke-width="5"/>
+    <path d="M107 98 Q122 91 137 98" fill="none" stroke="#1B1A17" stroke-width="5" stroke-linecap="round"/>
+    <path d="M163 98 Q178 91 193 98" fill="none" stroke="#1B1A17" stroke-width="5" stroke-linecap="round"/>
+    <circle id="hunk-pupil-l" cx="124" cy="108" r="8" fill="#1B1A17"/>
+    <circle id="hunk-pupil-r" cx="176" cy="108" r="8" fill="#1B1A17"/>
+    <circle cx="118" cy="101" r="3.2" fill="#FFFDF6"/>
+    <circle cx="170" cy="101" r="3.2" fill="#FFFDF6"/>
+    <circle cx="128" cy="114" r="2" fill="#FFFDF6"/>
+    <circle cx="180" cy="114" r="2" fill="#FFFDF6"/>
+    <circle cx="168" cy="130" r="2.4" fill="#7A4A2A"/>
+
+    <!-- brows -->
+    <g id="hunk-brow-normal">
+      <path d="M100 92 Q118 86 136 90" fill="none" stroke="#1B1A17" stroke-width="8" stroke-linecap="round"/>
+      <path d="M164 86 Q182 80 200 88" fill="none" stroke="#1B1A17" stroke-width="8" stroke-linecap="round"/>
+    </g>
+    <g id="hunk-brow-shock" opacity="0">
+      <path d="M100 84 Q118 70 136 82" fill="none" stroke="#1B1A17" stroke-width="8" stroke-linecap="round"/>
+      <path d="M164 78 Q182 64 200 78" fill="none" stroke="#1B1A17" stroke-width="8" stroke-linecap="round"/>
+    </g>
+    <g id="hunk-brow-sad" opacity="0">
+      <path d="M100 94 Q118 96 136 82" fill="none" stroke="#1B1A17" stroke-width="8" stroke-linecap="round"/>
+      <path d="M164 82 Q182 96 200 94" fill="none" stroke="#1B1A17" stroke-width="8" stroke-linecap="round"/>
+    </g>
+
+    <!-- nose and cheek -->
+    <path d="M150 114 C146 126 144 136 150 140" fill="none" stroke="#1B1A17" stroke-width="6" stroke-linecap="round"/>
+    <path d="M144 142 Q150 146 156 143" fill="none" stroke="#B87A3F" stroke-width="4" stroke-linecap="round"/>
+    <path d="M110 128 Q118 136 128 134" fill="none" stroke="#B87A3F" stroke-width="4" stroke-linecap="round"/>
+    <path d="M190 128 Q182 136 172 134" fill="none" stroke="#B87A3F" stroke-width="4" stroke-linecap="round"/>
+
+    <!-- mouths -->
+    <g id="hunk-mouth-flat"><path d="M126 152 Q150 158 174 146" fill="none" stroke="#1B1A17" stroke-width="7" stroke-linecap="round"/></g>
+    <g id="hunk-mouth-smile" opacity="0">
+      <path d="M124 148 Q150 176 176 146" fill="none" stroke="#1B1A17" stroke-width="7" stroke-linecap="round"/>
+      <path d="M178 146 Q182 142 180 138" fill="none" stroke="#1B1A17" stroke-width="5" stroke-linecap="round"/>
+    </g>
+    <g id="hunk-mouth-shock" opacity="0"><ellipse cx="150" cy="154" rx="11" ry="13" fill="#7A3B2E" stroke="#1B1A17" stroke-width="5"/></g>
+    <g id="hunk-mouth-open" opacity="0">
+      <ellipse cx="150" cy="154" rx="19" ry="11" fill="#7A3B2E" stroke="#1B1A17" stroke-width="5"/>
+      <path d="M134 148 Q150 142 166 148 Q150 154 134 148 Z" fill="#FFFDF6"/>
+    </g>
+  </g>
+</svg>
+</div>
+    <div class="char s48-hunk" style="left: 870px; top: 940px; filter: hue-rotate(38deg)"><svg viewBox="0 0 300 420" xmlns="http://www.w3.org/2000/svg">
+  <ellipse cx="150" cy="410" rx="82" ry="8" fill="#000" opacity=".16"/>
+
+  <!-- sparkle diamonds (hidden until animated) -->
+  <g id="hunk-sparkle" opacity="0">
+    <path d="M44 50 L46.8 57.2 L54 60 L46.8 62.8 L44 70 L41.2 62.8 L34 60 L41.2 57.2 Z" fill="#FFD24A" stroke="#1B1A17" stroke-width="3"/>
+    <path d="M256 54 L259.4 62.6 L268 66 L259.4 69.4 L256 78 L252.6 69.4 L244 66 L252.6 62.6 Z" fill="#FFD24A" stroke="#1B1A17" stroke-width="3"/>
+    <path d="M268 149 L270.5 155.5 L277 158 L270.5 160.5 L268 167 L265.5 160.5 L259 158 L265.5 155.5 Z" fill="#FFFDF6" stroke="#1B1A17" stroke-width="3"/>
+    <path d="M32 160 L34.2 165.8 L40 168 L34.2 170.2 L32 176 L29.8 170.2 L24 168 L29.8 165.8 Z" fill="#FFFDF6" stroke="#1B1A17" stroke-width="3"/>
+    <path d="M70 17 L72 22 L77 24 L72 26 L70 31 L68 26 L63 24 L68 22 Z" fill="#FFD24A" stroke="#1B1A17" stroke-width="3"/>
+    <path d="M228 12 L230.2 17.8 L236 20 L230.2 22.2 L228 28 L225.8 22.2 L220 20 L225.8 17.8 Z" fill="#FFD24A" stroke="#1B1A17" stroke-width="3"/>
+    <path d="M278 229 L280 234 L285 236 L280 238 L278 243 L276 238 L271 236 L276 234 Z" fill="#FFFDF6" stroke="#1B1A17" stroke-width="3"/>
+    <path d="M22 239 L24.5 245.5 L31 248 L24.5 250.5 L22 257 L19.5 250.5 L13 248 L19.5 245.5 Z" fill="#FFD24A" stroke="#1B1A17" stroke-width="3"/>
+  </g>
+
+  <!-- legs, hips and shoes -->
+  <g id="hunk-leg-l">
+    <rect x="109" y="326" width="34" height="66" rx="14" fill="#2E3B55" stroke="#1B1A17" stroke-width="7"/>
+    <rect x="103" y="387" width="46" height="19.5" rx="10" fill="#1B1A17" stroke="#1B1A17" stroke-width="7"/>
+  </g>
+  <g id="hunk-leg-r">
+    <rect x="157" y="326" width="34" height="66" rx="14" fill="#2E3B55" stroke="#1B1A17" stroke-width="7"/>
+    <rect x="151" y="387" width="46" height="19.5" rx="10" fill="#1B1A17" stroke="#1B1A17" stroke-width="7"/>
+  </g>
+  <rect x="104" y="330" width="92" height="44" rx="14" fill="#2E3B55" stroke="#1B1A17" stroke-width="7"/>
+
+  <!-- body -->
+  <g id="hunk-body">
+    <rect x="131" y="146" width="38" height="58" fill="#D89A5E" stroke="#1B1A17" stroke-width="7"/>
+    <path d="M92 198 C102 186 122 180 150 180 C178 180 198 186 208 198 C212 218 208 244 202 268 C197 296 195 322 192 340 C190 358 176 366 150 366 C124 366 110 358 108 340 C105 322 103 296 98 268 C92 244 88 218 92 198 Z"
+          fill="#D89A5E" stroke="#1B1A17" stroke-width="7" stroke-linejoin="round"/>
+    <path d="M124 206 Q138 214 148 210 M176 206 Q162 214 152 210" fill="none" stroke="#B87A3F" stroke-width="4" stroke-linecap="round"/>
+
+    <!-- tight white tank top -->
+    <path d="M102 194 C110 187 130 183 150 183 C170 183 190 187 198 194 C206 218 202 244 197 268 C192 296 190 326 188 342 C186 360 170 364 150 364 C130 364 114 360 112 342 C110 326 108 296 103 268 C98 244 94 218 102 194 Z"
+          fill="#FFFDF6" stroke="#1B1A17" stroke-width="7" stroke-linejoin="round"/>
+    <path d="M126 187 C131 207 140 218 150 218 C160 218 169 207 174 187 C166 183 158 181 150 181 C142 181 134 183 126 187 Z"
+          fill="#D89A5E" stroke="#1B1A17" stroke-width="7" stroke-linejoin="round"/>
+
+    <!-- fabric seams and muscle definition -->
+    <path d="M118 194 C112 212 110 232 110 252" fill="none" stroke="#D9CFBB" stroke-width="4" stroke-linecap="round"/>
+    <path d="M182 194 C188 212 190 232 190 252" fill="none" stroke="#D9CFBB" stroke-width="4" stroke-linecap="round"/>
+    <path d="M122 238 Q134 248 148 242 M178 238 Q166 248 152 242" fill="none" stroke="#D9CFBB" stroke-width="4" stroke-linecap="round"/>
+    <path d="M120 242 Q150 256 180 242" fill="none" stroke="#D9CFBB" stroke-width="5" stroke-linecap="round"/>
+    <path d="M150 218 L150 262" fill="none" stroke="#D9CFBB" stroke-width="4" stroke-linecap="round"/>
+    <path d="M150 266 L150 330" fill="none" stroke="#D9CFBB" stroke-width="4" stroke-linecap="round"/>
+    <path d="M136 292 Q150 300 164 292 M138 314 Q150 322 162 314" fill="none" stroke="#D9CFBB" stroke-width="4" stroke-linecap="round"/>
+    <path d="M124 276 Q118 300 124 322 M176 276 Q182 300 176 322" fill="none" stroke="#D9CFBB" stroke-width="4" stroke-linecap="round"/>
+    <path d="M112 338 Q150 352 188 338" fill="none" stroke="#E8DEC9" stroke-width="5" stroke-linecap="round"/>
+    <path d="M110 230 Q118 250 114 268" fill="none" stroke="#D9CFBB" stroke-width="4" stroke-linecap="round"/>
+    <path d="M190 230 Q182 250 186 268" fill="none" stroke="#D9CFBB" stroke-width="4" stroke-linecap="round"/>
+  </g>
+
+  <!-- arms (drawn over the torso so the shoulder joints stay visually attached) -->
+  <g id="hunk-arm-l" style="transform-box:view-box;transform-origin:114px 212px">
+    <circle cx="106" cy="206" r="19" fill="#D89A5E" stroke="#1B1A17" stroke-width="7"/>
+    <path d="M106 202 C88 198 72 208 66 228 C60 248 58 272 62 294 C64 312 64 326 66 336 C68 348 80 354 90 348 C99 343 102 334 100 322 C97 304 98 284 102 266 C106 248 112 230 114 214 Z"
+          fill="#D89A5E" stroke="#1B1A17" stroke-width="7" stroke-linejoin="round"/>
+    <path d="M78 238 C72 252 71 268 74 282" fill="none" stroke="#B87A3F" stroke-width="5" stroke-linecap="round"/>
+    <path d="M100 218 Q90 224 84 236" fill="none" stroke="#B87A3F" stroke-width="4" stroke-linecap="round"/>
+    <path d="M70 294 Q78 300 84 296" fill="none" stroke="#B87A3F" stroke-width="4" stroke-linecap="round"/>
+    <ellipse cx="86" cy="360" rx="18" ry="16" fill="#D89A5E" stroke="#1B1A17" stroke-width="7"/>
+    <path d="M74 356 Q78 362 84 364" fill="none" stroke="#B87A3F" stroke-width="3.5" stroke-linecap="round"/>
+  </g>
+
+  <g id="hunk-arm-r" style="transform-box:view-box;transform-origin:186px 212px">
+    <circle cx="194" cy="206" r="19" fill="#D89A5E" stroke="#1B1A17" stroke-width="7"/>
+    <path d="M194 202 C212 198 228 208 234 228 C240 248 242 272 238 294 C236 312 236 326 234 336 C232 348 220 354 210 348 C201 343 198 334 200 322 C203 304 202 284 198 266 C194 248 188 230 186 214 Z"
+          fill="#D89A5E" stroke="#1B1A17" stroke-width="7" stroke-linejoin="round"/>
+    <path d="M222 238 C228 252 229 268 226 282" fill="none" stroke="#B87A3F" stroke-width="5" stroke-linecap="round"/>
+    <path d="M200 218 Q210 224 216 236" fill="none" stroke="#B87A3F" stroke-width="4" stroke-linecap="round"/>
+    <path d="M230 294 Q222 300 216 296" fill="none" stroke="#B87A3F" stroke-width="4" stroke-linecap="round"/>
+    <ellipse cx="214" cy="360" rx="18" ry="16" fill="#D89A5E" stroke="#1B1A17" stroke-width="7"/>
+    <path d="M226 356 Q222 362 216 364" fill="none" stroke="#B87A3F" stroke-width="3.5" stroke-linecap="round"/>
+  </g>
+
+  <!-- head -->
+  <g id="hunk-head" style="transform-box:view-box;transform-origin:150px 164px">
+    <ellipse cx="92" cy="106" rx="11" ry="15" fill="#D89A5E" stroke="#1B1A17" stroke-width="7"/>
+    <ellipse cx="208" cy="106" rx="11" ry="15" fill="#D89A5E" stroke="#1B1A17" stroke-width="7"/>
+    <path d="M96 102 Q96 108 100 111" fill="none" stroke="#B87A3F" stroke-width="3.5" stroke-linecap="round"/>
+    <path d="M204 102 Q204 108 200 111" fill="none" stroke="#B87A3F" stroke-width="3.5" stroke-linecap="round"/>
+
+    <path d="M90 92 C90 56 114 34 150 34 C186 34 210 56 210 92 C210 120 206 140 196 152 C186 164 170 170 150 170 C130 170 114 164 104 152 C94 140 90 120 90 92 Z"
+          fill="#D89A5E" stroke="#1B1A17" stroke-width="7" stroke-linejoin="round"/>
+
+    <!-- styled hair -->
+    <path d="M88 102 C88 60 110 34 150 34 C190 34 212 60 212 102 C206 92 202 82 200 72 C184 78 166 78 150 76 C132 74 114 76 100 72 C98 82 94 92 88 102 Z"
+          fill="#2B201B" stroke="#1B1A17" stroke-width="7" stroke-linejoin="round"/>
+    <path d="M102 74 C102 42 126 16 158 14 C188 12 210 30 216 58 C204 50 192 46 182 50 C194 38 194 26 188 20 C182 36 166 50 142 58 C126 64 112 70 102 74 Z"
+          fill="#2B201B" stroke="#1B1A17" stroke-width="7" stroke-linejoin="round"/>
+    <path d="M116 48 C128 30 146 20 164 18" fill="none" stroke="#4A382E" stroke-width="7" stroke-linecap="round"/>
+    <path d="M172 38 C182 34 192 38 199 46" fill="none" stroke="#4A382E" stroke-width="6" stroke-linecap="round"/>
+    <circle cx="207" cy="120" r="4" fill="#F2B233" stroke="#1B1A17" stroke-width="2.5"/>
+
+    <!-- eyes -->
+    <ellipse cx="122" cy="106" rx="16" ry="19" fill="#FFFDF6" stroke="#1B1A17" stroke-width="5"/>
+    <ellipse cx="178" cy="106" rx="16" ry="19" fill="#FFFDF6" stroke="#1B1A17" stroke-width="5"/>
+    <path d="M107 98 Q122 91 137 98" fill="none" stroke="#1B1A17" stroke-width="5" stroke-linecap="round"/>
+    <path d="M163 98 Q178 91 193 98" fill="none" stroke="#1B1A17" stroke-width="5" stroke-linecap="round"/>
+    <circle id="hunk-pupil-l" cx="124" cy="108" r="8" fill="#1B1A17"/>
+    <circle id="hunk-pupil-r" cx="176" cy="108" r="8" fill="#1B1A17"/>
+    <circle cx="118" cy="101" r="3.2" fill="#FFFDF6"/>
+    <circle cx="170" cy="101" r="3.2" fill="#FFFDF6"/>
+    <circle cx="128" cy="114" r="2" fill="#FFFDF6"/>
+    <circle cx="180" cy="114" r="2" fill="#FFFDF6"/>
+    <circle cx="168" cy="130" r="2.4" fill="#7A4A2A"/>
+
+    <!-- brows -->
+    <g id="hunk-brow-normal">
+      <path d="M100 92 Q118 86 136 90" fill="none" stroke="#1B1A17" stroke-width="8" stroke-linecap="round"/>
+      <path d="M164 86 Q182 80 200 88" fill="none" stroke="#1B1A17" stroke-width="8" stroke-linecap="round"/>
+    </g>
+    <g id="hunk-brow-shock" opacity="0">
+      <path d="M100 84 Q118 70 136 82" fill="none" stroke="#1B1A17" stroke-width="8" stroke-linecap="round"/>
+      <path d="M164 78 Q182 64 200 78" fill="none" stroke="#1B1A17" stroke-width="8" stroke-linecap="round"/>
+    </g>
+    <g id="hunk-brow-sad" opacity="0">
+      <path d="M100 94 Q118 96 136 82" fill="none" stroke="#1B1A17" stroke-width="8" stroke-linecap="round"/>
+      <path d="M164 82 Q182 96 200 94" fill="none" stroke="#1B1A17" stroke-width="8" stroke-linecap="round"/>
+    </g>
+
+    <!-- nose and cheek -->
+    <path d="M150 114 C146 126 144 136 150 140" fill="none" stroke="#1B1A17" stroke-width="6" stroke-linecap="round"/>
+    <path d="M144 142 Q150 146 156 143" fill="none" stroke="#B87A3F" stroke-width="4" stroke-linecap="round"/>
+    <path d="M110 128 Q118 136 128 134" fill="none" stroke="#B87A3F" stroke-width="4" stroke-linecap="round"/>
+    <path d="M190 128 Q182 136 172 134" fill="none" stroke="#B87A3F" stroke-width="4" stroke-linecap="round"/>
+
+    <!-- mouths -->
+    <g id="hunk-mouth-flat"><path d="M126 152 Q150 158 174 146" fill="none" stroke="#1B1A17" stroke-width="7" stroke-linecap="round"/></g>
+    <g id="hunk-mouth-smile" opacity="0">
+      <path d="M124 148 Q150 176 176 146" fill="none" stroke="#1B1A17" stroke-width="7" stroke-linecap="round"/>
+      <path d="M178 146 Q182 142 180 138" fill="none" stroke="#1B1A17" stroke-width="5" stroke-linecap="round"/>
+    </g>
+    <g id="hunk-mouth-shock" opacity="0"><ellipse cx="150" cy="154" rx="11" ry="13" fill="#7A3B2E" stroke="#1B1A17" stroke-width="5"/></g>
+    <g id="hunk-mouth-open" opacity="0">
+      <ellipse cx="150" cy="154" rx="19" ry="11" fill="#7A3B2E" stroke="#1B1A17" stroke-width="5"/>
+      <path d="M134 148 Q150 142 166 148 Q150 154 134 148 Z" fill="#FFFDF6"/>
+    </g>
+  </g>
+</svg>
+</div>
+
+    <div class="char" id="s48-prot">﻿<svg viewBox="0 0 300 420" xmlns="http://www.w3.org/2000/svg">
+  <ellipse cx="150" cy="410" rx="78" ry="8" fill="#000" opacity=".16"/>
+  <g id="prot-leg-l">
+    <rect x="110" y="326" width="32" height="66" rx="14" fill="#2E3B55" stroke="#1B1A17" stroke-width="7"/>
+    <rect x="103" y="387" width="46" height="19.5" rx="10" fill="#1B1A17" stroke="#1B1A17" stroke-width="7"/>
+  </g>
+  <g id="prot-leg-r">
+    <rect x="158" y="326" width="32" height="66" rx="14" fill="#2E3B55" stroke="#1B1A17" stroke-width="7"/>
+    <rect x="151" y="387" width="46" height="19.5" rx="10" fill="#1B1A17" stroke="#1B1A17" stroke-width="7"/>
+  </g>
+  <rect x="86" y="230" width="128" height="142" rx="38" fill="#F2B233" stroke="#1B1A17" stroke-width="7"/>
+  <path d="M118 250 L150 300 L182 250" fill="none" stroke="#D99322" stroke-width="6" stroke-linecap="round"/>
+  <g id="prot-arm-l" style="transform-origin:100px 250px">
+    <circle cx="84" cy="250" r="26" fill="#F2B233" stroke="#1B1A17" stroke-width="7"/>
+    <rect x="52" y="240" width="42" height="124" rx="21" fill="#F2B233" stroke="#1B1A17" stroke-width="7"/>
+    <circle cx="73" cy="366" r="21" fill="#F2C9A0" stroke="#1B1A17" stroke-width="7"/>
+  </g>
+  <g id="prot-arm-r" style="transform-origin:200px 250px">
+    <circle cx="216" cy="250" r="26" fill="#F2B233" stroke="#1B1A17" stroke-width="7"/>
+    <rect x="206" y="240" width="42" height="124" rx="21" fill="#F2B233" stroke="#1B1A17" stroke-width="7"/>
+    <circle cx="227" cy="366" r="21" fill="#F2C9A0" stroke="#1B1A17" stroke-width="7"/>
+  </g>
+  <rect x="130" y="204" width="40" height="46" fill="#F2C9A0" stroke="#1B1A17" stroke-width="7"/>
+  <circle cx="64" cy="138" r="17" fill="#F2C9A0" stroke="#1B1A17" stroke-width="7"/>
+  <circle cx="236" cy="138" r="17" fill="#F2C9A0" stroke="#1B1A17" stroke-width="7"/>
+  <ellipse cx="150" cy="128" rx="84" ry="92" fill="#F2C9A0" stroke="#1B1A17" stroke-width="7"/>
+  <path d="M62 140 C58 58, 112 28, 150 28 C188 28, 242 58, 238 140 C220 96, 190 84, 150 84 C110 84, 80 96, 62 140 Z" fill="#1B1A17"/>
+  <path d="M62 132 C78 112, 92 104, 112 100" fill="none" stroke="#3A2E28" stroke-width="10" stroke-linecap="round"/>
+  <ellipse cx="116" cy="132" rx="17" ry="21" fill="#FFFDF6" stroke="#1B1A17" stroke-width="5"/>
+  <ellipse cx="184" cy="132" rx="17" ry="21" fill="#FFFDF6" stroke="#1B1A17" stroke-width="5"/>
+  <circle id="prot-pupil-l" cx="119" cy="134" r="7" fill="#1B1A17"/>
+  <circle id="prot-pupil-r" cx="187" cy="134" r="7" fill="#1B1A17"/>
+  <rect id="prot-lid-l" x="99" y="111" width="34" height="24" rx="6" fill="#F2C9A0" stroke="#1B1A17" stroke-width="4"/>
+  <rect id="prot-lid-r" x="167" y="111" width="34" height="24" rx="6" fill="#F2C9A0" stroke="#1B1A17" stroke-width="4"/>
+  <g id="prot-brow-normal">
+    <path d="M100 104 Q116 94 132 102" fill="none" stroke="#1B1A17" stroke-width="8" stroke-linecap="round"/>
+    <path d="M168 102 Q184 94 200 104" fill="none" stroke="#1B1A17" stroke-width="8" stroke-linecap="round"/>
+  </g>
+  <g id="prot-brow-shock" opacity="0">
+    <path d="M100 92 Q116 80 132 90" fill="none" stroke="#1B1A17" stroke-width="8" stroke-linecap="round"/>
+    <path d="M168 90 Q184 80 200 92" fill="none" stroke="#1B1A17" stroke-width="8" stroke-linecap="round"/>
+  </g>
+  <g id="prot-brow-sad" opacity="0">
+    <path d="M100 106 Q116 112 132 100" fill="none" stroke="#1B1A17" stroke-width="8" stroke-linecap="round"/>
+    <path d="M168 100 Q184 112 200 106" fill="none" stroke="#1B1A17" stroke-width="8" stroke-linecap="round"/>
+  </g>
+  <path d="M150 150 Q144 168 154 172" fill="none" stroke="#1B1A17" stroke-width="6" stroke-linecap="round"/>
+  <g id="prot-mouth-flat"><path d="M126 186 Q150 192 174 186" fill="none" stroke="#1B1A17" stroke-width="7" stroke-linecap="round"/></g>
+  <g id="prot-mouth-smile" opacity="0"><path d="M120 180 Q150 210 180 180" fill="none" stroke="#1B1A17" stroke-width="7" stroke-linecap="round"/></g>
+  <g id="prot-mouth-shock" opacity="0"><ellipse cx="150" cy="190" rx="18" ry="24" fill="#7A3B2E" stroke="#1B1A17" stroke-width="5"/></g>
+  <g id="prot-mouth-open" opacity="0"><ellipse cx="150" cy="192" rx="14" ry="12" fill="#7A3B2E" stroke="#1B1A17" stroke-width="5"/></g>
+  <g id="prot-blush" opacity="0"><ellipse cx="100" cy="166" rx="18" ry="10" fill="#E4543C" opacity=".55"/><ellipse cx="200" cy="166" rx="18" ry="10" fill="#E4543C" opacity=".55"/></g>
+  <path id="prot-sweat" d="M244 116 Q254 138 244 148 Q234 138 244 116" fill="#8CC9D9" stroke="#1B1A17" stroke-width="4" opacity="0"/>
+</svg>
+</div>
+
+    <div class="s48-grill" id="s48-grill">
+      <div class="pan"></div>
+      <div class="broth"></div>
+      <div class="dome-rim"></div>
+      <div class="coal c1"></div>
+      <div class="coal c2"></div>
+      <div class="knob"></div>
+      <div class="dome"></div>
+      <div class="vent v1"></div>
+      <div class="vent v2"></div>
+      <div class="vent v3"></div>
+      <div class="vent v4"></div>
+      <div class="pork p1"></div>
+      <div class="pork p2"></div>
+      <div class="pork p3"></div>
+      <div class="pork p4"></div>
+      <div class="pork p5"></div>
+    </div>
+
+    <div class="s48-glass" style="left: 150px; top: 895px; transform: rotate(10deg)">
+      <span class="straw"></span><span class="cup"></span>
+    </div>
+    <div class="s48-glass" style="left: 358px; top: 835px; transform: rotate(6deg)">
+      <span class="straw"></span><span class="cup"></span>
+    </div>
+    <div class="s48-glass" style="left: 580px; top: 775px; transform: rotate(-6deg)">
+      <span class="straw"></span><span class="cup"></span>
+    </div>
+    <div class="s48-glass" style="left: 680px; top: 835px; transform: rotate(-8deg)">
+      <span class="straw"></span><span class="cup"></span>
+    </div>
+    <div class="s48-glass" style="left: 888px; top: 895px; transform: rotate(-10deg)">
+      <span class="straw"></span><span class="cup"></span>
+    </div>
+    <div class="s48-glass" style="left: 420px; top: 1000px; transform: rotate(12deg)">
+      <span class="straw"></span><span class="cup"></span>
+    </div>
+  </div>
+</div>
+
+<script>
+  const tl = gsap.timeline({ paused: true });
+
+  // Slow push.
+  Stage.dolly(tl, { layers: [{ sel: ".s48-bg", z: -320 }, { sel: "#s48-stage", z: 0 }], move: 120, duration: 3.6 });
+
+  // Six glasses clink over the grill.
+  tl.fromTo(
+    ".s48-glass",
+    { y: 0 },
+    { y: -16, duration: 0.24, yoyo: true, repeat: 5, stagger: 0.05, ease: "sine.inOut" },
+    0.65
+  );
+
+  window.__timelines["s48"] = tl;
+</script>
+
+</template>

@@ -1,0 +1,523 @@
+<template>
+<style>
+@font-face {
+  font-family: "Kanit";
+  src: url("assets/fonts/Kanit-Medium.ttf") format("truetype");
+  font-weight: 500;
+}
+@font-face {
+  font-family: "Kanit";
+  src: url("assets/fonts/Kanit-Bold.ttf") format("truetype");
+  font-weight: 700;
+}
+@font-face {
+  font-family: "Kanit";
+  src: url("assets/fonts/Kanit-ExtraBold.ttf") format("truetype");
+  font-weight: 800;
+}
+@font-face {
+  font-family: "PlexThai";
+  src: url("assets/fonts/IBMPlexSansThaiLooped-Regular.ttf") format("truetype");
+  font-weight: 400;
+}
+@font-face {
+  font-family: "PlexThai";
+  src: url("assets/fonts/IBMPlexSansThaiLooped-Medium.ttf") format("truetype");
+  font-weight: 500;
+}
+
+* {
+  margin: 0;
+  padding: 0;
+  box-sizing: border-box;
+}
+
+#root {
+  position: absolute;
+  inset: 0;
+  overflow: hidden;
+  background: #f7ebd2;
+  font-family: "Kanit", sans-serif;
+  -webkit-font-smoothing: antialiased;
+}
+
+.stage {
+  position: absolute;
+  inset: 0;
+  transform-origin: 50% 48%;
+}
+
+.char {
+  position: absolute;
+  transform-origin: 50% 100%;
+  z-index: 8;
+}
+
+.char svg {
+  display: block;
+  width: 100%;
+  height: 100%;
+  overflow: visible;
+}
+
+.blink {
+  transform-origin: 50% 100%;
+}
+
+/* A phone notification that lives in the cartoon world. */
+.notif {
+  position: absolute;
+  width: 430px;
+  padding: 16px 18px;
+  display: flex;
+  gap: 14px;
+  align-items: center;
+  background: #fff8e8;
+  border: 4px solid #1b1a17;
+  border-radius: 18px;
+  box-shadow: 0 8px 0 rgba(27, 26, 23, 0.16);
+  z-index: 30;
+}
+
+.notif .ico {
+  width: 54px;
+  height: 54px;
+  border-radius: 14px;
+  background: #e5533d;
+  flex: none;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: #f7ebd2;
+  font: 800 26px/1 "Kanit", sans-serif;
+}
+
+.notif .copy {
+  font: 600 20px/1.25 "Kanit", sans-serif;
+  color: #1b1a17;
+}
+
+.notif .copy small {
+  display: block;
+  margin-top: 3px;
+  font: 500 16px/1.2 "PlexThai", sans-serif;
+  color: #6b5a48;
+}
+
+.paper {
+  background: #fff8e8;
+  border: 4px solid #1b1a17;
+  border-radius: 14px;
+  box-shadow: 0 8px 0 rgba(27, 26, 23, 0.14);
+}
+
+</style>
+<script>
+/* Minimal 2D "stage" helpers shared by every scene.
+ *
+ * Two problems this solves:
+ *   1. characters floating above / sinking under the floor
+ *      -> Stage.snap() puts the soles exactly on a named floor element
+ *   2. a camera push that reads as "the props are growing"
+ *      -> Stage.camera() moves background / world / foreground at different
+ *         rates around a single focus point, so it reads as depth, not scale
+ *
+ * Character SVG contract: viewBox 0 0 300 420, soles at y=410.
+ */
+
+(function () {
+  var SOLE = 410;
+  var VB_H = 420;
+
+  function soleOf(el) {
+    var r = el.getBoundingClientRect();
+    return r.top + r.height * (SOLE / VB_H);
+  }
+
+  /**
+   * Put every matched element's feet on the top edge of `floorSelector`.
+   * Elements must share an offsetParent with the floor (a lift cabin, a room).
+   */
+  function snap(selector, floorSelector, opts) {
+    var floor = document.querySelector(floorSelector);
+    if (!floor) return [];
+    var floorY = floor.getBoundingClientRect().top;
+    var els = document.querySelectorAll(selector);
+    var moved = [];
+    for (var i = 0; i < els.length; i++) {
+      var el = els[i];
+      var delta = floorY - soleOf(el) - (opts && opts.gap ? opts.gap : 0);
+      if (Math.abs(delta) < 0.5) {
+        moved.push(0);
+        continue;
+      }
+      el.style.top = (el.offsetTop + delta).toFixed(1) + "px";
+      moved.push(Number(delta.toFixed(1)));
+    }
+    return moved;
+  }
+
+  /**
+   * Parallax camera move. Layers tagged .cam-bg / .cam-world / .cam-fg
+   * scale by different amounts around the same focus point.
+   *
+   *   Stage.camera(tl, { zoom: 0.05, duration: 3.6, origin: "540px 1200px" });
+   */
+  function camera(tl, opts) {
+    opts = opts || {};
+    var zoom = opts.zoom == null ? 0.045 : opts.zoom;
+    var at = opts.at == null ? 0 : opts.at;
+    var dur = opts.duration == null ? 3.6 : opts.duration;
+    var ease = opts.ease || "none";
+    var origin = opts.origin || "540px 1200px";
+    var rates = opts.rates || { ".cam-bg": 0.45, ".cam-world": 1, ".cam-fg": 1.55 };
+    var applied = [];
+
+    Object.keys(rates).forEach(function (sel) {
+      var els = document.querySelectorAll(sel);
+      if (!els.length) return;
+      tl.fromTo(
+        els,
+        { scale: 1, transformOrigin: origin },
+        { scale: 1 + zoom * rates[sel], duration: dur, ease: ease },
+        at,
+      );
+      applied.push(sel);
+    });
+
+    return applied;
+  }
+
+  /**
+   * Real camera dolly using CSS 3D. Layers sit at different z; moving them all by the
+   * same amount makes near layers grow more than far ones — which is what a camera does,
+   * as opposed to `scale`, which grows everything equally and reads as "props inflating".
+   *
+   *   Stage.dolly(tl, { layers: [{ sel: "#s47-bg", z: -300 }, { sel: "#s47-stage", z: 0 }], move: 140 });
+   */
+  function dolly(tl, opts) {
+    opts = opts || {};
+    var rootEl = document.querySelector("#root");
+    if (!rootEl) return false;
+    var perspective = opts.perspective == null ? 1400 : opts.perspective;
+    rootEl.style.perspective = perspective + "px";
+    rootEl.style.perspectiveOrigin = opts.origin || "50% 62%";
+    rootEl.style.transformStyle = "preserve-3d";
+
+    var layers = opts.layers || [];
+    var move = opts.move == null ? 120 : opts.move;
+    var dur = opts.duration == null ? 3.6 : opts.duration;
+    var at = opts.at == null ? 0 : opts.at;
+    var applied = [];
+
+    layers.forEach(function (layer) {
+      var els = document.querySelectorAll(layer.sel);
+      if (!els.length) return;
+      var z0 = layer.z || 0;
+      // pre-scale so the layer still fills the frame at its resting depth
+      var comp = (perspective - z0) / perspective;
+      for (var i = 0; i < els.length; i++) {
+        els[i].style.transformStyle = "preserve-3d";
+        els[i].style.backfaceVisibility = "hidden";
+      }
+      tl.fromTo(els, { z: z0, scale: comp }, { z: z0 + move, duration: dur, ease: "none" }, at);
+      applied.push(layer.sel);
+    });
+
+    return applied;
+  }
+
+  /**
+   * Gravity-correct fall. Starts at rest, accelerates down, fades near the end.
+   * `y` is the drop distance in px; positive is down.
+   */
+  function fall(tl, target, opts) {
+    opts = opts || {};
+    var at = opts.at == null ? 0 : opts.at;
+    var dur = opts.duration == null ? 0.7 : opts.duration;
+    var drop = opts.drop == null ? 56 : opts.drop;
+    var stagger = opts.stagger || 0;
+    return tl.fromTo(
+      target,
+      { y: 0, opacity: 0 },
+      { y: drop, opacity: 1, duration: dur, ease: "power2.in", stagger: stagger },
+      at,
+    );
+  }
+
+  window.Stage = { snap: snap, camera: camera, dolly: dolly, fall: fall, soleOf: soleOf };
+})();
+
+</script>
+<style>
+  .s13-bg { position: absolute; inset: 0; z-index: 1; }
+  .s13-bg svg { display: block; width: 1080px; height: 1920px; }
+  #s13-stage { position: absolute; inset: 0; z-index: 2; }
+  #s13-prot { left: 360px; top: 870px; width: 300px; height: 420px; z-index: 8; }
+  #s13-prot #prot-leg-l { transform-box: view-box; transform-origin: 128px 342px; }
+  #s13-prot #prot-leg-r { transform-box: view-box; transform-origin: 172px 342px; }
+  #s13-prot #prot-arm-l, #s13-prot #prot-arm-r { transform-box: view-box; }
+  .s13-line {
+    position: absolute; height: 7px; background: #1b1a17; border-radius: 4px;
+    z-index: 5;
+  }
+</style>
+
+<div id="root" data-composition-id="s13" data-width="1080" data-height="1920">
+  <div class="s13-bg"><svg viewBox="0 0 1080 1920" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="Condo corridor with a lift, fire-escape door and potted plant">
+  <!-- ================= ROOM SHELL ================= -->
+  <rect width="1080" height="1920" fill="#EFE9D6"/>
+  <polygon points="0,0 1080,0 870,420 210,420" fill="#ECE5D1" stroke="#1B1A17" stroke-width="8"/>
+  <polygon points="0,0 210,420 210,1320 0,1920" fill="#D2DDC6" stroke="#1B1A17" stroke-width="8"/>
+  <polygon points="1080,0 870,420 870,1320 1080,1920" fill="#DCE6D2" stroke="#1B1A17" stroke-width="8"/>
+  <rect x="210" y="420" width="660" height="900" fill="#E6EDDB" stroke="#1B1A17" stroke-width="8"/>
+
+  <!-- floor -->
+  <polygon points="210,1320 870,1320 1080,1920 0,1920" fill="#C9B99C" stroke="#1B1A17" stroke-width="8"/>
+  <g stroke="#B09E82" stroke-width="4">
+    <line x1="270" y1="1320" x2="130" y2="1920"/>
+    <line x1="450" y1="1320" x2="450" y2="1920"/>
+    <line x1="630" y1="1320" x2="770" y2="1920"/>
+    <line x1="810" y1="1320" x2="950" y2="1920"/>
+    <line x1="164" y1="1450" x2="916" y2="1450"/>
+    <line x1="112" y1="1600" x2="968" y2="1600"/>
+    <line x1="49" y1="1780" x2="1031" y2="1780"/>
+  </g>
+  <g fill="#B3A386">
+    <circle cx="330" cy="1508" r="3"/><circle cx="386" cy="1546" r="2.5"/>
+    <circle cx="612" cy="1518" r="3"/><circle cx="704" cy="1562" r="2.5"/>
+    <circle cx="270" cy="1632" r="2.5"/><circle cx="836" cy="1650" r="3"/>
+    <circle cx="468" cy="1712" r="2.5"/><circle cx="744" cy="1760" r="3"/>
+    <circle cx="208" cy="1810" r="2.5"/><circle cx="940" cy="1884" r="3"/>
+  </g>
+
+  <!-- wall dado + scuffs -->
+  <rect x="210" y="1030" width="660" height="290" fill="#D9E3CC" opacity=".7"/>
+  <line x1="210" y1="1030" x2="870" y2="1030" stroke="#1B1A17" stroke-width="4" opacity=".55"/>
+  <g stroke="#B9C3AE" stroke-width="4" stroke-linecap="round">
+    <line x1="244" y1="1190" x2="282" y2="1190"/>
+    <line x1="780" y1="1240" x2="820" y2="1240"/>
+    <line x1="330" y1="1280" x2="360" y2="1280"/>
+  </g>
+
+  <!-- ================= CEILING DETAILS ================= -->
+  <rect x="470" y="132" width="140" height="30" rx="5" fill="#CBD4C2" stroke="#1B1A17" stroke-width="6"/>
+  <g stroke="#AEB9A6" stroke-width="4">
+    <line x1="486" y1="142" x2="594" y2="142"/>
+    <line x1="486" y1="152" x2="594" y2="152"/>
+  </g>
+
+  <!-- ================= LIFT ================= -->
+  <rect x="448" y="694" width="208" height="626" fill="#C3CBC7" stroke="#1B1A17" stroke-width="9"/>
+  <rect x="462" y="714" width="92" height="604" fill="#B4BDBA" stroke="#1B1A17" stroke-width="7"/>
+  <rect x="554" y="714" width="92" height="604" fill="#AEB7B4" stroke="#1B1A17" stroke-width="7"/>
+  <line x1="554" y1="714" x2="554" y2="1318" stroke="#1B1A17" stroke-width="8"/>
+  <g stroke="#9BA5A2" stroke-width="2.5" opacity=".8">
+    <line x1="480" y1="730" x2="480" y2="1304"/>
+    <line x1="500" y1="730" x2="500" y2="1304"/>
+    <line x1="520" y1="730" x2="520" y2="1304"/>
+    <line x1="572" y1="730" x2="572" y2="1304"/>
+    <line x1="592" y1="730" x2="592" y2="1304"/>
+    <line x1="612" y1="730" x2="612" y2="1304"/>
+  </g>
+  <rect x="502" y="652" width="100" height="34" rx="4" fill="#2A2E2C" stroke="#1B1A17" stroke-width="6"/>
+  <rect x="522" y="664" width="14" height="12" fill="#F2B233"/>
+  <rect x="552" y="664" width="14" height="12" fill="#F2B233" opacity=".55"/>
+
+  <!-- call panel -->
+  <rect x="660" y="958" width="34" height="100" rx="6" fill="#E7E1CE" stroke="#1B1A17" stroke-width="6"/>
+  <circle cx="677" cy="982" r="10" fill="#F2B233" stroke="#1B1A17" stroke-width="4"/>
+  <circle cx="677" cy="1020" r="10" fill="#E5533D" stroke="#1B1A17" stroke-width="4"/>
+  <path d="M671 976 l6 -7 l6 7 z" fill="#1B1A17"/>
+  <path d="M671 1026 l6 7 l6 -7 z" fill="#1B1A17"/>
+
+  <!-- CCTV above the lift -->
+  <g stroke="#1B1A17" stroke-width="5" stroke-linejoin="round">
+    <rect x="560" y="492" width="20" height="40" fill="#DDE4D4"/>
+    <path d="M532 528 h72 l14 26 h-84 z" fill="#F7EBD2"/>
+    <circle cx="556" cy="542" r="8" fill="#4E5A54" stroke-width="4"/>
+  </g>
+
+  <!-- ================= FIRE STAIR DOOR ================= -->
+  <rect x="232" y="692" width="176" height="628" fill="#A8B39D" stroke="#1B1A17" stroke-width="8"/>
+  <rect x="244" y="704" width="152" height="614" fill="#8FA08B" stroke="#1B1A17" stroke-width="7"/>
+  <rect x="272" y="762" width="96" height="112" fill="#BFDAD8" stroke="#1B1A17" stroke-width="6"/>
+  <line x1="320" y1="764" x2="320" y2="872" stroke="#1B1A17" stroke-width="5"/>
+  <line x1="274" y1="818" x2="366" y2="818" stroke="#1B1A17" stroke-width="5"/>
+  <rect x="260" y="958" width="120" height="16" rx="6" fill="#D7DACF" stroke="#1B1A17" stroke-width="5"/>
+  <rect x="244" y="1236" width="152" height="70" fill="#C3C9BC" stroke="#1B1A17" stroke-width="5"/>
+  <rect x="292" y="618" width="72" height="46" rx="4" fill="#FBF4DC" stroke="#1B1A17" stroke-width="5"/>
+  <g stroke="#4C7E4A" stroke-width="6" fill="none" stroke-linecap="square">
+    <path d="M310 652 h10 v-8 h10 v-8 h10 v-8 h10"/>
+  </g>
+
+  <!-- ================= APARTMENT DOOR ================= -->
+  <rect x="714" y="690" width="152" height="630" fill="#8A5A3B" stroke="#1B1A17" stroke-width="8"/>
+  <rect x="724" y="702" width="132" height="608" fill="#A9673B" stroke="#1B1A17" stroke-width="7"/>
+  <rect x="738" y="744" width="104" height="206" fill="#96582F" stroke="#1B1A17" stroke-width="5"/>
+  <rect x="738" y="978" width="104" height="252" fill="#96582F" stroke="#1B1A17" stroke-width="5"/>
+  <circle cx="832" cy="1012" r="11" fill="#F2B233" stroke="#1B1A17" stroke-width="5"/>
+  <circle cx="794" cy="748" r="6" fill="#3B3F3C" stroke="#1B1A17" stroke-width="3"/>
+  <rect x="742" y="706" width="42" height="22" rx="3" fill="#FBF4DC" stroke="#1B1A17" stroke-width="4"/>
+  <g stroke="#C99C6B" stroke-width="3">
+    <line x1="752" y1="712" x2="752" y2="722"/>
+    <line x1="762" y1="712" x2="762" y2="722"/>
+    <line x1="772" y1="712" x2="772" y2="722"/>
+  </g>
+
+  <!-- jasmine garland on the handle -->
+  <g fill="#FBF4DC" stroke="#1B1A17" stroke-width="3">
+    <circle cx="832" cy="1044" r="5"/><circle cx="824" cy="1054" r="5"/>
+    <circle cx="832" cy="1064" r="5"/><circle cx="826" cy="1076" r="4"/>
+    <circle cx="836" cy="1086" r="4"/>
+  </g>
+
+  <!-- ================= PENDANT LIGHTS ================= -->
+  <g stroke="#1B1A17" stroke-linecap="round">
+    <line x1="370" y1="150" x2="370" y2="318" stroke-width="6"/>
+    <polygon points="332,318 408,318 394,372 346,372" fill="#F2B233" stroke-width="7"/>
+    <circle cx="370" cy="382" r="13" fill="#FBF6E7" stroke-width="5"/>
+    <line x1="700" y1="170" x2="700" y2="342" stroke-width="6"/>
+    <polygon points="664,342 736,342 724,392 676,392" fill="#4C9BC4" stroke-width="7"/>
+    <circle cx="700" cy="402" r="13" fill="#FBF6E7" stroke-width="5"/>
+  </g>
+  <ellipse cx="370" cy="1660" rx="122" ry="24" fill="#E0D3B4" opacity=".55"/>
+  <ellipse cx="700" cy="1596" rx="112" ry="22" fill="#E0D3B4" opacity=".5"/>
+
+  <!-- ================= SIDE WALL DETAILS ================= -->
+  <!-- fire hose reel, left wall -->
+  <g stroke="#1B1A17" stroke-width="6">
+    <ellipse cx="96" cy="1006" rx="22" ry="52" fill="#E5533D"/>
+    <ellipse cx="96" cy="1006" rx="10" ry="30" fill="#B7372A"/>
+    <circle cx="96" cy="1006" r="6" fill="#F2B233"/>
+    <path d="M78 1054 q-18 18 -6 42" fill="none" stroke-width="5"/>
+    <rect x="66" y="1092" width="18" height="26" rx="4" fill="#C9CFD2"/>
+  </g>
+  <rect x="78" y="912" width="38" height="30" rx="3" fill="#FBF4DC" stroke="#1B1A17" stroke-width="4"/>
+  <path d="M88 922 q10 -10 18 0 v12 q-8 8 -18 0 z" fill="#E5533D" stroke="#1B1A17" stroke-width="3"/>
+
+  <!-- wall light, right wall -->
+  <g stroke="#1B1A17" stroke-width="5">
+    <path d="M974 856 h44 l8 34 h-60 z" fill="#F2B233"/>
+    <rect x="988" y="890" width="16" height="10" fill="#FBF6E7"/>
+    <path d="M996 846 q-30 -38 -6 -74" fill="none" stroke-width="4"/>
+  </g>
+
+  <!-- ================= POTTED PLANT (right foreground) ================= -->
+  <g stroke="#1B1A17" stroke-width="8" stroke-linejoin="round">
+    <path d="M936 1444 Q 900 1340 874 1256 Q 922 1318 950 1400 Z" fill="#6B9445"/>
+    <path d="M946 1444 Q 936 1318 944 1220 Q 976 1312 976 1410 Z" fill="#7FA650"/>
+    <path d="M952 1448 Q 984 1348 1036 1282 Q 1002 1380 982 1438 Z" fill="#6B9445"/>
+    <path d="M940 1450 Q 1010 1396 1066 1390 Q 1002 1452 964 1470 Z" fill="#7FA650"/>
+    <path d="M900 1440 L1022 1440 L1008 1592 L914 1592 Z" fill="#C96A50"/>
+    <rect x="892" y="1428" width="140" height="24" fill="#B3553F"/>
+  </g>
+  <ellipse cx="956" cy="1600" rx="78" ry="16" fill="#B3A386" opacity=".5"/>
+
+  <!-- ================= DOORMAT + SLIPPERS ================= -->
+  <rect x="702" y="1332" width="176" height="60" rx="6" fill="#8E9A80" stroke="#1B1A17" stroke-width="6"/>
+  <g stroke="#75816A" stroke-width="4">
+    <line x1="718" y1="1348" x2="862" y2="1348"/>
+    <line x1="718" y1="1362" x2="862" y2="1362"/>
+    <line x1="718" y1="1376" x2="862" y2="1376"/>
+  </g>
+  <g stroke="#1B1A17" stroke-width="5">
+    <ellipse cx="742" cy="1416" rx="26" ry="12" fill="#E5533D"/>
+    <ellipse cx="790" cy="1426" rx="26" ry="12" fill="#E5533D"/>
+  </g>
+
+  <!-- a dropped leaf + a quiet floor line -->
+  <g fill="#7FA650" stroke="#1B1A17" stroke-width="3">
+    <path d="M486 1480 q18 -10 30 4 q-20 12 -30 -4 z"/>
+  </g>
+  <g stroke="#B09E82" stroke-width="4" opacity=".7">
+    <line x1="1020" y1="1468" x2="1054" y2="1468"/>
+    <line x1="1004" y1="1490" x2="1026" y2="1490"/>
+  </g>
+</svg></div>
+  <div class="stage" id="s13-stage">
+    <div class="s13-line" style="left: 300px; top: 838px; width: 300px"></div>
+    <div class="s13-line" style="left: 620px; top: 908px; width: 250px"></div>
+    <div class="s13-line" style="left: 420px; top: 986px; width: 340px"></div>
+    <div class="s13-line" style="left: 740px; top: 1050px; width: 220px"></div>
+    <div class="s13-line" style="left: 320px; top: 1120px; width: 280px"></div>
+    <div class="s13-line" style="left: 560px; top: 1188px; width: 320px"></div>
+
+    <div class="char" id="s13-prot">﻿<svg viewBox="0 0 300 420" xmlns="http://www.w3.org/2000/svg">
+  <ellipse cx="150" cy="410" rx="78" ry="8" fill="#000" opacity=".16"/>
+  <g id="prot-leg-l">
+    <rect x="110" y="326" width="32" height="66" rx="14" fill="#2E3B55" stroke="#1B1A17" stroke-width="7"/>
+    <rect x="103" y="387" width="46" height="19.5" rx="10" fill="#1B1A17" stroke="#1B1A17" stroke-width="7"/>
+  </g>
+  <g id="prot-leg-r">
+    <rect x="158" y="326" width="32" height="66" rx="14" fill="#2E3B55" stroke="#1B1A17" stroke-width="7"/>
+    <rect x="151" y="387" width="46" height="19.5" rx="10" fill="#1B1A17" stroke="#1B1A17" stroke-width="7"/>
+  </g>
+  <rect x="86" y="230" width="128" height="142" rx="38" fill="#F2B233" stroke="#1B1A17" stroke-width="7"/>
+  <path d="M118 250 L150 300 L182 250" fill="none" stroke="#D99322" stroke-width="6" stroke-linecap="round"/>
+  <g id="prot-arm-l" style="transform-origin:100px 250px">
+    <circle cx="84" cy="250" r="26" fill="#F2B233" stroke="#1B1A17" stroke-width="7"/>
+    <rect x="52" y="240" width="42" height="124" rx="21" fill="#F2B233" stroke="#1B1A17" stroke-width="7"/>
+    <circle cx="73" cy="366" r="21" fill="#F2C9A0" stroke="#1B1A17" stroke-width="7"/>
+  </g>
+  <g id="prot-arm-r" style="transform-origin:200px 250px">
+    <circle cx="216" cy="250" r="26" fill="#F2B233" stroke="#1B1A17" stroke-width="7"/>
+    <rect x="206" y="240" width="42" height="124" rx="21" fill="#F2B233" stroke="#1B1A17" stroke-width="7"/>
+    <circle cx="227" cy="366" r="21" fill="#F2C9A0" stroke="#1B1A17" stroke-width="7"/>
+  </g>
+  <rect x="130" y="204" width="40" height="46" fill="#F2C9A0" stroke="#1B1A17" stroke-width="7"/>
+  <circle cx="64" cy="138" r="17" fill="#F2C9A0" stroke="#1B1A17" stroke-width="7"/>
+  <circle cx="236" cy="138" r="17" fill="#F2C9A0" stroke="#1B1A17" stroke-width="7"/>
+  <ellipse cx="150" cy="128" rx="84" ry="92" fill="#F2C9A0" stroke="#1B1A17" stroke-width="7"/>
+  <path d="M62 140 C58 58, 112 28, 150 28 C188 28, 242 58, 238 140 C220 96, 190 84, 150 84 C110 84, 80 96, 62 140 Z" fill="#1B1A17"/>
+  <path d="M62 132 C78 112, 92 104, 112 100" fill="none" stroke="#3A2E28" stroke-width="10" stroke-linecap="round"/>
+  <ellipse cx="116" cy="132" rx="17" ry="21" fill="#FFFDF6" stroke="#1B1A17" stroke-width="5"/>
+  <ellipse cx="184" cy="132" rx="17" ry="21" fill="#FFFDF6" stroke="#1B1A17" stroke-width="5"/>
+  <circle id="prot-pupil-l" cx="119" cy="134" r="7" fill="#1B1A17"/>
+  <circle id="prot-pupil-r" cx="187" cy="134" r="7" fill="#1B1A17"/>
+  <rect id="prot-lid-l" x="99" y="111" width="34" height="24" rx="6" fill="#F2C9A0" stroke="#1B1A17" stroke-width="4"/>
+  <rect id="prot-lid-r" x="167" y="111" width="34" height="24" rx="6" fill="#F2C9A0" stroke="#1B1A17" stroke-width="4"/>
+  <g id="prot-brow-normal">
+    <path d="M100 104 Q116 94 132 102" fill="none" stroke="#1B1A17" stroke-width="8" stroke-linecap="round"/>
+    <path d="M168 102 Q184 94 200 104" fill="none" stroke="#1B1A17" stroke-width="8" stroke-linecap="round"/>
+  </g>
+  <g id="prot-brow-shock" opacity="0">
+    <path d="M100 92 Q116 80 132 90" fill="none" stroke="#1B1A17" stroke-width="8" stroke-linecap="round"/>
+    <path d="M168 90 Q184 80 200 92" fill="none" stroke="#1B1A17" stroke-width="8" stroke-linecap="round"/>
+  </g>
+  <g id="prot-brow-sad" opacity="0">
+    <path d="M100 106 Q116 112 132 100" fill="none" stroke="#1B1A17" stroke-width="8" stroke-linecap="round"/>
+    <path d="M168 100 Q184 112 200 106" fill="none" stroke="#1B1A17" stroke-width="8" stroke-linecap="round"/>
+  </g>
+  <path d="M150 150 Q144 168 154 172" fill="none" stroke="#1B1A17" stroke-width="6" stroke-linecap="round"/>
+  <g id="prot-mouth-flat"><path d="M126 186 Q150 192 174 186" fill="none" stroke="#1B1A17" stroke-width="7" stroke-linecap="round"/></g>
+  <g id="prot-mouth-smile" opacity="0"><path d="M120 180 Q150 210 180 180" fill="none" stroke="#1B1A17" stroke-width="7" stroke-linecap="round"/></g>
+  <g id="prot-mouth-shock" opacity="0"><ellipse cx="150" cy="190" rx="18" ry="24" fill="#7A3B2E" stroke="#1B1A17" stroke-width="5"/></g>
+  <g id="prot-mouth-open" opacity="0"><ellipse cx="150" cy="192" rx="14" ry="12" fill="#7A3B2E" stroke="#1B1A17" stroke-width="5"/></g>
+  <g id="prot-blush" opacity="0"><ellipse cx="100" cy="166" rx="18" ry="10" fill="#E4543C" opacity=".55"/><ellipse cx="200" cy="166" rx="18" ry="10" fill="#E4543C" opacity=".55"/></g>
+  <path id="prot-sweat" d="M244 116 Q254 138 244 148 Q234 138 244 116" fill="#8CC9D9" stroke="#1B1A17" stroke-width="4" opacity="0"/>
+</svg>
+</div>
+  </div>
+</div>
+
+<script>
+  const tl = gsap.timeline({ paused: true });
+
+  tl.set("#prot-brow-normal", { opacity: 0 }, 0);
+  tl.set("#prot-brow-shock", { opacity: 1 }, 0);
+  tl.set("#prot-mouth-flat", { opacity: 0 }, 0);
+  tl.set("#prot-mouth-open", { opacity: 1 }, 0);
+  tl.set("#prot-leg-l", { rotate: -28, svgOrigin: "128px 342px" }, 0);
+  tl.set("#prot-leg-r", { rotate: 24, svgOrigin: "172px 342px" }, 0);
+
+  // He sprints low along the corridor, heading for the lift.
+  tl.fromTo("#s13-prot", { x: -240, rotate: 3 }, { x: 0, rotate: 10, duration: 1.7, ease: "power2.out" }, 0.2);
+
+  // Speed lines streak past and burn off.
+  tl.fromTo(".s13-line", { x: 0, opacity: 1 }, { x: -320, opacity: 0.08, duration: 1, stagger: 0.06, ease: "power1.in" }, 0.2);
+
+  window.__timelines["s13"] = tl;
+</script>
+
+</template>
